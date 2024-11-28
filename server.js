@@ -34,8 +34,14 @@ wss.on("connection", (ws) => {
     });
   });
 
-  wss.on("headers", (headers, req) => {
-    headers.push("Access-Control-Allow-Origin: *"); // Allow all origins
+  server.on("upgrade", (req, socket, head) => {
+    if (req.headers.origin !== "https://verdant-otter-7da637.netlify.app") {
+      socket.destroy();
+      return;
+    }
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      wss.emit("connection", ws, req);
+    });
   });
 
   ws.on("close", () => {
