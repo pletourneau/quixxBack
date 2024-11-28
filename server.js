@@ -5,7 +5,10 @@ const app = express();
 const server = require("http").createServer(app);
 const wss = new WebSocket.Server({ server });
 
-// Serve static frontend files
+// Use the port provided by Render or default to 3000 for local development
+const PORT = process.env.PORT || 3000;
+
+// Serve static frontend files (if needed)
 app.use(express.static("public"));
 
 let gameState = {}; // Store the game state
@@ -36,6 +39,6 @@ wss.on("connection", (ws) => {
   });
 });
 
-server.listen(3000, () => {
-  console.log("Server is running on http://localhost:3000");
+server.listen(PORT, () => {
+  console.log(`Server is running on port ${PORT}`);
 });
