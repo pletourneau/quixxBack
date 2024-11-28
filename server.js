@@ -34,6 +34,10 @@ wss.on("connection", (ws) => {
     });
   });
 
+  wss.on("headers", (headers, req) => {
+    headers.push("Access-Control-Allow-Origin: *"); // Allow all origins
+  });
+
   ws.on("close", () => {
     console.log("A player disconnected");
   });
