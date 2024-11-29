@@ -5,11 +5,7 @@ const app = express();
 const server = require("http").createServer(app);
 const wss = new WebSocket.Server({ server });
 
-// Use the port provided by Render or default to 3000 for local development
 const PORT = process.env.PORT || 3000;
-
-// Serve static frontend files (if needed)
-app.use(express.static("public"));
 
 // Rooms and their game states
 const rooms = {};
@@ -28,71 +24,73 @@ wss.on("connection", (ws) => {
   console.log("A player connected");
 
   let currentRoom = null;
+  let playerName = null;
 
   // Handle messages from clients
   ws.on("message", (message) => {
     const data = JSON.parse(message);
 
-    // Join or create a room
     if (data.type === "joinRoom") {
       const room = data.passcode;
+      playerName = data.playerName;
 
-      // If the room doesn't exist, create it
+      // Create room if it doesn't exist
       if (!rooms[room]) {
         rooms[room] = {
           gameState: {
-            diceValues: {
-              white1: 0,
-              white2: 0,
-              red: 0,
-              yellow: 0,
-              green: 0,
-              blue: 0,
-            },
-            scoreSheets: {}, // Player-specific scores
+            diceValues: {},
+            players: [],
+            activePlayerIndex: 0,
           },
           clients: [],
         };
-        console.log(`Room ${room} created.`);
-        // Notify the client that the room was created
-        ws.send(
-          JSON.stringify({
-            type: "roomStatus",
-            room,
-            status: "created",
-          })
-        );
-      } else {
-        console.log(`Player joined existing room: ${room}`);
-        // Notify the client that the room was joined
-        ws.send(
-          JSON.stringify({
-            type: "roomStatus",
-            room,
-            status: "joined",
-          })
-        );
       }
 
-      // Join the room
+      // Add player to room
+      rooms[room].gameState.players.push({
+        name: playerName,
+        scoreSheet: { red: [], yellow: [], green: [], blue: [] },
+      });
       rooms[room].clients.push(ws);
       currentRoom = room;
 
-      // Send the current game state to the player
-      ws.send(JSON.stringify(rooms[room].gameState));
+      console.log(`${playerName} joined room: ${room}`);
+      broadcastGameState(room);
     }
 
-    // Handle game actions (e.g., rolling dice, updating scores)
-    if (currentRoom) {
-      if (data.type === "rollDice") {
-        rooms[currentRoom].gameState.diceValues = data.diceValues;
-      } else if (data.type === "updateScore") {
-        rooms[currentRoom].gameState.scoreSheets[data.playerId] =
-          data.scoreSheet;
-      }
+    if (data.type === "rollDice" && currentRoom) {
+      const roomState = rooms[currentRoom].gameState;
+      const activePlayer = roomState.players[roomState.activePlayerIndex].name;
 
-      // Broadcast the updated game state to the room
-      broadcastGameState(currentRoom);
+      // Ensure the action is performed by the active player
+      if (playerName === activePlayer) {
+        roomState.diceValues = data.diceValues;
+        broadcastGameState(currentRoom);
+      }
+    }
+
+    if (data.type === "markNumber" && currentRoom) {
+      const { color, number } = data;
+      const player = rooms[currentRoom].gameState.players.find(
+        (p) => p.name === playerName
+      );
+
+      // Update player's score sheet
+      if (player) {
+        player.scoreSheet[color].push(number);
+        broadcastGameState(currentRoom);
+      }
+    }
+
+    if (data.type === "endTurn" && currentRoom) {
+      const roomState = rooms[currentRoom].gameState;
+
+      // Ensure only the active player can end their turn
+      if (playerName === roomState.players[roomState.activePlayerIndex].name) {
+        roomState.activePlayerIndex =
+          (roomState.activePlayerIndex + 1) % roomState.players.length;
+        broadcastGameState(currentRoom);
+      }
     }
   });
 
@@ -102,13 +100,7 @@ wss.on("connection", (ws) => {
       rooms[currentRoom].clients = rooms[currentRoom].clients.filter(
         (client) => client !== ws
       );
-      console.log(`Player left room: ${currentRoom}`);
-
-      // If the room is empty, delete it
-      if (rooms[currentRoom].clients.length === 0) {
-        delete rooms[currentRoom];
-        console.log(`Room ${currentRoom} deleted.`);
-      }
+      console.log(`${playerName} left room: ${currentRoom}`);
     }
   });
 });
