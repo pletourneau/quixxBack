@@ -54,12 +54,29 @@ wss.on("connection", (ws) => {
           clients: [],
         };
         console.log(`Room ${room} created.`);
+        // Notify the client that the room was created
+        ws.send(
+          JSON.stringify({
+            type: "roomStatus",
+            room,
+            status: "created",
+          })
+        );
+      } else {
+        console.log(`Player joined existing room: ${room}`);
+        // Notify the client that the room was joined
+        ws.send(
+          JSON.stringify({
+            type: "roomStatus",
+            room,
+            status: "joined",
+          })
+        );
       }
 
       // Join the room
       rooms[room].clients.push(ws);
       currentRoom = room;
-      console.log(`Player joined room: ${room}`);
 
       // Send the current game state to the player
       ws.send(JSON.stringify(rooms[room].gameState));
