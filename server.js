@@ -11,41 +11,88 @@ const PORT = process.env.PORT || 3000;
 // Serve static frontend files (if needed)
 app.use(express.static("public"));
 
-let gameState = {}; // Store the game state
+// Rooms and their game states
+const rooms = {};
+
+// Broadcast the updated game state to all clients in a room
+function broadcastGameState(room) {
+  const state = JSON.stringify(rooms[room].gameState);
+  rooms[room].clients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(state);
+    }
+  });
+}
 
 wss.on("connection", (ws) => {
   console.log("A player connected");
 
-  // Send initial state
-  ws.send(JSON.stringify(gameState));
+  let currentRoom = null;
 
-  // Receive updates
+  // Handle messages from clients
   ws.on("message", (message) => {
     const data = JSON.parse(message);
 
-    // Update game state
-    gameState = { ...gameState, ...data };
+    // Join or create a room
+    if (data.type === "joinRoom") {
+      const room = data.passcode;
 
-    // Broadcast updated state to all players
-    wss.clients.forEach((client) => {
-      if (client.readyState === WebSocket.OPEN) {
-        client.send(JSON.stringify(gameState));
+      // If the room doesn't exist, create it
+      if (!rooms[room]) {
+        rooms[room] = {
+          gameState: {
+            diceValues: {
+              white1: 0,
+              white2: 0,
+              red: 0,
+              yellow: 0,
+              green: 0,
+              blue: 0,
+            },
+            scoreSheets: {}, // Player-specific scores
+          },
+          clients: [],
+        };
+        console.log(`Room ${room} created.`);
       }
-    });
-  });
 
-  server.on("upgrade", (req, socket, head) => {
-    if (req.headers.origin !== "https://verdant-otter-7da637.netlify.app") {
-      socket.destroy();
-      return;
+      // Join the room
+      rooms[room].clients.push(ws);
+      currentRoom = room;
+      console.log(`Player joined room: ${room}`);
+
+      // Send the current game state to the player
+      ws.send(JSON.stringify(rooms[room].gameState));
     }
-    wss.handleUpgrade(req, socket, head, (ws) => {
-      wss.emit("connection", ws, req);
-    });
+
+    // Handle game actions (e.g., rolling dice, updating scores)
+    if (currentRoom) {
+      if (data.type === "rollDice") {
+        rooms[currentRoom].gameState.diceValues = data.diceValues;
+      } else if (data.type === "updateScore") {
+        rooms[currentRoom].gameState.scoreSheets[data.playerId] =
+          data.scoreSheet;
+      }
+
+      // Broadcast the updated game state to the room
+      broadcastGameState(currentRoom);
+    }
   });
 
+  // Handle disconnection
   ws.on("close", () => {
-    console.log("A player disconnected");
+    if (currentRoom) {
+      rooms[currentRoom].clients = rooms[currentRoom].clients.filter(
+        (client) => client !== ws
+      );
+      console.log(`Player left room: ${currentRoom}`);
+
+      // If the room is empty, delete it
+      if (rooms[currentRoom].clients.length === 0) {
+        delete rooms[currentRoom];
+        console.log(`Room ${currentRoom} deleted.`);
+      }
+    }
   });
 });
 
