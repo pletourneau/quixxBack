@@ -12,7 +12,10 @@ const rooms = {};
 
 // Broadcast the updated game state to all clients in a room
 function broadcastGameState(room) {
-  const state = JSON.stringify(rooms[room].gameState);
+  const state = JSON.stringify({
+    type: "gameState",
+    ...rooms[room].gameState,
+  });
   rooms[room].clients.forEach((client) => {
     if (client.readyState === WebSocket.OPEN) {
       client.send(state);
@@ -44,7 +47,6 @@ wss.on("connection", (ws) => {
           },
           clients: [],
         };
-        ws.send(JSON.stringify({ type: "newGame", room }));
         console.log(`Room ${room} created`);
       }
 
@@ -57,6 +59,11 @@ wss.on("connection", (ws) => {
       currentRoom = room;
 
       console.log(`${playerName} joined room: ${room}`);
+
+      // Send the current game state to the newly joined client
+      ws.send(JSON.stringify({ type: "gameState", ...rooms[room].gameState }));
+
+      // Broadcast the updated game state to all clients in the room
       broadcastGameState(room);
     }
 
