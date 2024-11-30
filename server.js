@@ -44,6 +44,8 @@ wss.on("connection", (ws) => {
           },
           clients: [],
         };
+        ws.send(JSON.stringify({ type: "newGame", room }));
+        console.log(`Room ${room} created`);
       }
 
       // Add player to room
@@ -62,7 +64,6 @@ wss.on("connection", (ws) => {
       const roomState = rooms[currentRoom].gameState;
       const activePlayer = roomState.players[roomState.activePlayerIndex].name;
 
-      // Ensure the action is performed by the active player
       if (playerName === activePlayer) {
         roomState.diceValues = data.diceValues;
         broadcastGameState(currentRoom);
@@ -75,7 +76,6 @@ wss.on("connection", (ws) => {
         (p) => p.name === playerName
       );
 
-      // Update player's score sheet
       if (player) {
         player.scoreSheet[color].push(number);
         broadcastGameState(currentRoom);
@@ -85,7 +85,6 @@ wss.on("connection", (ws) => {
     if (data.type === "endTurn" && currentRoom) {
       const roomState = rooms[currentRoom].gameState;
 
-      // Ensure only the active player can end their turn
       if (playerName === roomState.players[roomState.activePlayerIndex].name) {
         roomState.activePlayerIndex =
           (roomState.activePlayerIndex + 1) % roomState.players.length;
@@ -94,7 +93,6 @@ wss.on("connection", (ws) => {
     }
   });
 
-  // Handle disconnection
   ws.on("close", () => {
     if (currentRoom) {
       rooms[currentRoom].clients = rooms[currentRoom].clients.filter(
