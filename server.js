@@ -12,10 +12,17 @@ const rooms = {};
 
 // Broadcast the updated game state to all clients in a room
 function broadcastGameState(room) {
-  const state = JSON.stringify({
+  const gameState = {
     type: "gameState",
-    ...rooms[room].gameState,
-  });
+    players: rooms[room].gameState.players.map((player) => player.name),
+    diceValues: rooms[room].gameState.diceValues,
+    scoreSheets: rooms[room].gameState.players.reduce((sheets, player) => {
+      sheets[player.name] = player.scoreSheet;
+      return sheets;
+    }, {}),
+  };
+
+  const state = JSON.stringify(gameState);
   rooms[room].clients.forEach((client) => {
     if (client.readyState === WebSocket.OPEN) {
       client.send(state);
@@ -29,7 +36,6 @@ wss.on("connection", (ws) => {
   let currentRoom = null;
   let playerName = null;
 
-  // Handle messages from clients
   ws.on("message", (message) => {
     const data = JSON.parse(message);
 
@@ -37,7 +43,6 @@ wss.on("connection", (ws) => {
       const room = data.passcode;
       playerName = data.playerName;
 
-      // Create room if it doesn't exist
       if (!rooms[room]) {
         rooms[room] = {
           gameState: {
@@ -47,10 +52,10 @@ wss.on("connection", (ws) => {
           },
           clients: [],
         };
+        ws.send(JSON.stringify({ type: "newGame", room }));
         console.log(`Room ${room} created`);
       }
 
-      // Add player to room
       rooms[room].gameState.players.push({
         name: playerName,
         scoreSheet: { red: [], yellow: [], green: [], blue: [] },
@@ -59,11 +64,6 @@ wss.on("connection", (ws) => {
       currentRoom = room;
 
       console.log(`${playerName} joined room: ${room}`);
-
-      // Send the current game state to the newly joined client
-      ws.send(JSON.stringify({ type: "gameState", ...rooms[room].gameState }));
-
-      // Broadcast the updated game state to all clients in the room
       broadcastGameState(room);
     }
 
@@ -105,7 +105,11 @@ wss.on("connection", (ws) => {
       rooms[currentRoom].clients = rooms[currentRoom].clients.filter(
         (client) => client !== ws
       );
+      rooms[currentRoom].gameState.players = rooms[
+        currentRoom
+      ].gameState.players.filter((player) => player.name !== playerName);
       console.log(`${playerName} left room: ${currentRoom}`);
+      broadcastGameState(currentRoom);
     }
   });
 });
