@@ -22,6 +22,7 @@ function broadcastGameState(room) {
       sheets[player.name] = player.scoreSheet;
       return sheets;
     }, {}),
+    activePlayerIndex: rooms[room].gameState.activePlayerIndex, // Include activePlayerIndex here
   };
 
   const state = JSON.stringify(gameState);
