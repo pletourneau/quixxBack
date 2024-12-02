@@ -1,3 +1,4 @@
+// server.js - WebSocket Server
 const express = require("express");
 const WebSocket = require("ws");
 
