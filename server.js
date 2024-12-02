@@ -46,6 +46,7 @@ wss.on("connection", (ws) => {
       playerName = data.playerName;
 
       if (!rooms[room]) {
+        // Create a new room
         rooms[room] = {
           gameState: {
             started: false,
@@ -54,6 +55,7 @@ wss.on("connection", (ws) => {
             activePlayerIndex: 0,
           },
           clients: [],
+          roomCreator: ws, // Track the creator of the room
         };
 
         // Notify the first player (creator) they are the room owner
@@ -71,6 +73,7 @@ wss.on("connection", (ws) => {
         return;
       }
 
+      // Add the player to the room
       rooms[room].gameState.players.push({
         name: playerName,
         scoreSheet: { red: [], yellow: [], green: [], blue: [] },
@@ -85,13 +88,21 @@ wss.on("connection", (ws) => {
     if (data.type === "startGame" && currentRoom) {
       const roomState = rooms[currentRoom].gameState;
 
-      if (rooms[currentRoom].clients[0] === ws) {
+      // Only the room creator can start the game
+      if (rooms[currentRoom].roomCreator === ws) {
         roomState.started = true;
         broadcastGameState(currentRoom);
+      } else {
+        ws.send(
+          JSON.stringify({
+            type: "error",
+            message: "Only the room creator can start the game.",
+          })
+        );
       }
     }
 
-    if (!rooms[currentRoom]?.gameState?.started) {
+    if (currentRoom && !rooms[currentRoom]?.gameState?.started) {
       ws.send(
         JSON.stringify({
           type: "error",
