@@ -91,6 +91,7 @@ wss.on("connection", (ws) => {
 
       // Only the room creator can start the game
       if (rooms[currentRoom].roomCreator === ws) {
+        roomState.players = roomState.players.sort(() => Math.random() - 0.5);
         roomState.started = true;
         broadcastGameState(currentRoom);
       } else {
