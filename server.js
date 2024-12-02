@@ -14,6 +14,7 @@ const rooms = {};
 function broadcastGameState(room) {
   const gameState = {
     type: "gameState",
+    started: rooms[room].gameState.started,
     players: rooms[room].gameState.players.map((player) => player.name),
     diceValues: rooms[room].gameState.diceValues,
     scoreSheets: rooms[room].gameState.players.reduce((sheets, player) => {
@@ -30,6 +31,7 @@ function broadcastGameState(room) {
   });
 }
 
+// WebSocket connection handler
 wss.on("connection", (ws) => {
   console.log("A player connected");
 
@@ -46,6 +48,7 @@ wss.on("connection", (ws) => {
       if (!rooms[room]) {
         rooms[room] = {
           gameState: {
+            started: false,
             diceValues: {},
             players: [],
             activePlayerIndex: 0,
@@ -54,6 +57,16 @@ wss.on("connection", (ws) => {
         };
         ws.send(JSON.stringify({ type: "newGame", room }));
         console.log(`Room ${room} created`);
+      }
+
+      if (rooms[room].gameState.started) {
+        ws.send(
+          JSON.stringify({
+            type: "error",
+            message: "Game has already started.",
+          })
+        );
+        return;
       }
 
       rooms[room].gameState.players.push({
@@ -67,6 +80,24 @@ wss.on("connection", (ws) => {
       broadcastGameState(room);
     }
 
+    if (data.type === "startGame" && currentRoom) {
+      const roomState = rooms[currentRoom].gameState;
+
+      if (rooms[currentRoom].clients[0] === ws) {
+        roomState.started = true;
+        broadcastGameState(currentRoom);
+      }
+    }
+
+    if (!rooms[currentRoom]?.gameState?.started) {
+      ws.send(
+        JSON.stringify({
+          type: "error",
+          message: "Game has not started yet.",
+        })
+      );
+      return;
+    }
     if (data.type === "rollDice" && currentRoom) {
       const roomState = rooms[currentRoom].gameState;
       const activePlayer = roomState.players[roomState.activePlayerIndex].name;
