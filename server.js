@@ -55,6 +55,8 @@ wss.on("connection", (ws) => {
           },
           clients: [],
         };
+
+        // Notify the first player (creator) they are the room owner
         ws.send(JSON.stringify({ type: "newGame", room }));
         console.log(`Room ${room} created`);
       }
@@ -98,6 +100,7 @@ wss.on("connection", (ws) => {
       );
       return;
     }
+
     if (data.type === "rollDice" && currentRoom) {
       const roomState = rooms[currentRoom].gameState;
       const activePlayer = roomState.players[roomState.activePlayerIndex].name;
