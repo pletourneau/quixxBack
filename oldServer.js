@@ -17,7 +17,10 @@ function broadcastGameState(room) {
     started: rooms[room].gameState.started,
     players: rooms[room].gameState.players.map((player) => ({
       name: player.name,
+      markedSpaces: player.markedSpaces, // Include marked spaces
     })),
+    diceValues: rooms[room].gameState.diceValues,
+    activePlayerIndex: rooms[room].gameState.activePlayerIndex,
   };
 
   const state = JSON.stringify(gameState);
@@ -43,15 +46,19 @@ wss.on("connection", (ws) => {
       playerName = data.playerName;
 
       if (!rooms[room]) {
+        // Create a new room
         rooms[room] = {
           gameState: {
             started: false,
+            diceValues: {},
             players: [],
+            activePlayerIndex: 0,
           },
           clients: [],
-          roomCreator: playerName,
+          roomCreator: playerName, // Track the creator of the room
         };
 
+        // Notify the first player (creator) they are the room owner
         ws.send(JSON.stringify({ type: "newGame", room }));
         console.log(`Room ${room} created by ${playerName}`);
       }
@@ -66,7 +73,12 @@ wss.on("connection", (ws) => {
         return;
       }
 
-      rooms[room].gameState.players.push({ name: playerName });
+      // Add the player to the room
+      rooms[room].gameState.players.push({
+        name: playerName,
+        markedSpaces: [],
+        scoreSheet: { red: [], yellow: [], green: [], blue: [] },
+      });
       rooms[room].clients.push(ws);
       currentRoom = room;
 
@@ -77,6 +89,7 @@ wss.on("connection", (ws) => {
     if (data.type === "startGame" && currentRoom) {
       const roomState = rooms[currentRoom].gameState;
 
+      // Validate room creator by playerName instead of ws
       if (rooms[currentRoom].roomCreator === playerName) {
         roomState.players = roomState.players.sort(() => Math.random() - 0.5);
         roomState.started = true;
@@ -89,6 +102,48 @@ wss.on("connection", (ws) => {
             message: "Only the room creator can start the game.",
           })
         );
+      }
+    }
+
+    if (currentRoom && !rooms[currentRoom]?.gameState?.started) {
+      ws.send(
+        JSON.stringify({
+          type: "error",
+          message: "Game has not started yet.",
+        })
+      );
+      return;
+    }
+
+    if (data.type === "rollDice" && currentRoom) {
+      const roomState = rooms[currentRoom].gameState;
+      const activePlayer = roomState.players[roomState.activePlayerIndex].name;
+
+      if (playerName === activePlayer) {
+        roomState.diceValues = data.diceValues;
+        broadcastGameState(currentRoom);
+      }
+    }
+
+    if (data.type === "markNumber" && currentRoom) {
+      const { color, number } = data;
+      const player = rooms[currentRoom].gameState.players.find(
+        (p) => p.name === playerName
+      );
+
+      if (player) {
+        player.scoreSheet[color].push(number);
+        broadcastGameState(currentRoom);
+      }
+    }
+
+    if (data.type === "endTurn" && currentRoom) {
+      const roomState = rooms[currentRoom].gameState;
+
+      if (playerName === roomState.players[roomState.activePlayerIndex].name) {
+        roomState.activePlayerIndex =
+          (roomState.activePlayerIndex + 1) % roomState.players.length;
+        broadcastGameState(currentRoom);
       }
     }
   });
