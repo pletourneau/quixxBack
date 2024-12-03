@@ -15,13 +15,12 @@ function broadcastGameState(room) {
   const gameState = {
     type: "gameState",
     started: rooms[room].gameState.started,
-    players: rooms[room].gameState.players.map((player) => player.name),
+    players: rooms[room].gameState.players.map((player) => ({
+      name: player.name,
+      markedSpaces: player.markedSpaces, // Include marked spaces
+    })),
     diceValues: rooms[room].gameState.diceValues,
-    scoreSheets: rooms[room].gameState.players.reduce((sheets, player) => {
-      sheets[player.name] = player.scoreSheet;
-      return sheets;
-    }, {}),
-    activePlayerIndex: rooms[room].gameState.activePlayerIndex, // Include activePlayerIndex here
+    activePlayerIndex: rooms[room].gameState.activePlayerIndex,
   };
 
   const state = JSON.stringify(gameState);
@@ -77,6 +76,7 @@ wss.on("connection", (ws) => {
       // Add the player to the room
       rooms[room].gameState.players.push({
         name: playerName,
+        markedSpaces: [],
         scoreSheet: { red: [], yellow: [], green: [], blue: [] },
       });
       rooms[room].clients.push(ws);
