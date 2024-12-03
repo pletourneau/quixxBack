@@ -99,10 +99,10 @@ wss.on("connection", (ws) => {
           Math.random() * roomState.turnOrder.length
         );
         roomState.started = true;
-
+        console.log("Shuffled turn order:", roomState.turnOrder);
         broadcastGameState(currentRoom);
         console.log(`Game started by room creator: ${playerName}`);
-        console.log("Shuffled turn order:", roomState.turnOrder);
+
         console.log(
           "Starting with player:",
           roomState.turnOrder[roomState.activePlayerIndex]
