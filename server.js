@@ -22,6 +22,8 @@ function broadcastGameState(room) {
     activePlayerIndex: rooms[room].gameState.activePlayerIndex,
   };
 
+  console.log("Broadcasting game state:", gameState);
+
   const state = JSON.stringify(gameState);
   rooms[room].clients.forEach((client) => {
     if (client.readyState === WebSocket.OPEN) {
@@ -71,18 +73,23 @@ wss.on("connection", (ws) => {
         return;
       }
 
-      rooms[room].gameState.players.push({ name: playerName });
+      // Ensure player is added only once
+      if (!rooms[room].gameState.players.some((p) => p.name === playerName)) {
+        rooms[room].gameState.players.push({ name: playerName });
+      }
+
       rooms[room].clients.push(ws);
       currentRoom = room;
 
       console.log(`${playerName} joined room: ${room}`);
+      console.log("Current players:", rooms[room].gameState.players);
       broadcastGameState(room);
     }
 
     // Start Game
     if (data.type === "startGame" && currentRoom) {
       const roomState = rooms[currentRoom].gameState;
-
+      console.log("Players before starting the game:", roomState.players);
       if (rooms[currentRoom].roomCreator === playerName) {
         roomState.turnOrder = roomState.players
           .map((player) => player.name)
