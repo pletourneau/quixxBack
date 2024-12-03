@@ -121,22 +121,34 @@ wss.on("connection", (ws) => {
     if (data.type === "endTurn" && currentRoom) {
       const roomState = rooms[currentRoom].gameState;
 
-      if (playerName === roomState.turnOrder[roomState.activePlayerIndex]) {
-        // Move to the next player
-        roomState.activePlayerIndex =
-          (roomState.activePlayerIndex + 1) % roomState.turnOrder.length;
+      // Check if the player has already ended their turn
+      if (!roomState.turnEndedBy.includes(playerName)) {
+        roomState.turnEndedBy.push(playerName);
+        console.log(`${playerName} ended their turn.`);
 
-        broadcastGameState(currentRoom); // Notify all clients of the updated state
-        console.log(
-          `Turn ended by ${playerName}. Next player: ${
-            roomState.turnOrder[roomState.activePlayerIndex]
-          }`
-        );
+        // Check if all players have ended their turn
+        if (roomState.turnEndedBy.length === roomState.players.length) {
+          // Reset turnEndedBy for the next turn
+          roomState.turnEndedBy = [];
+
+          // Move to the next active player
+          roomState.activePlayerIndex =
+            (roomState.activePlayerIndex + 1) % roomState.turnOrder.length;
+
+          console.log(
+            `All players ended their turn. Next active player: ${
+              roomState.turnOrder[roomState.activePlayerIndex]
+            }`
+          );
+        }
+
+        // Broadcast the updated game state
+        broadcastGameState(currentRoom);
       } else {
         ws.send(
           JSON.stringify({
             type: "error",
-            message: "Only the active player can end the turn.",
+            message: "You have already ended your turn.",
           })
         );
       }
