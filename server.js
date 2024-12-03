@@ -56,12 +56,12 @@ wss.on("connection", (ws) => {
             activePlayerIndex: 0,
           },
           clients: [],
-          roomCreator: ws, // Track the creator of the room
+          roomCreator: playerName, // Track the creator of the room
         };
 
         // Notify the first player (creator) they are the room owner
         ws.send(JSON.stringify({ type: "newGame", room }));
-        console.log(`Room ${room} created`);
+        console.log(`Room ${room} created by ${playerName}`);
       }
 
       if (rooms[room].gameState.started) {
@@ -89,11 +89,12 @@ wss.on("connection", (ws) => {
     if (data.type === "startGame" && currentRoom) {
       const roomState = rooms[currentRoom].gameState;
 
-      // Only the room creator can start the game
-      if (rooms[currentRoom].roomCreator === ws) {
+      // Validate room creator by playerName instead of ws
+      if (rooms[currentRoom].roomCreator === playerName) {
         roomState.players = roomState.players.sort(() => Math.random() - 0.5);
         roomState.started = true;
         broadcastGameState(currentRoom);
+        console.log(`Game started by room creator: ${playerName}`);
       } else {
         ws.send(
           JSON.stringify({
