@@ -33,7 +33,6 @@ function broadcastGameState(room) {
   });
 }
 
-// WebSocket connection handler
 wss.on("connection", (ws) => {
   console.log("A player connected");
 
@@ -56,6 +55,7 @@ wss.on("connection", (ws) => {
             turnOrder: [],
             activePlayerIndex: 0,
             diceValues: null,
+            boards: {}, // Initialize boards object here for all players
           },
           clients: [],
           roomCreator: playerName,
@@ -160,6 +160,49 @@ wss.on("connection", (ws) => {
           JSON.stringify({
             type: "error",
             message: "It's not your turn to end the turn.",
+          })
+        );
+      }
+    }
+
+    // Mark Cell
+    if (data.type === "markCell" && currentRoom) {
+      const roomState = rooms[currentRoom].gameState;
+      const { playerName: markPlayerName, color, number } = data;
+
+      // Ensure boards structure exists
+      if (!roomState.boards) {
+        roomState.boards = {};
+      }
+
+      if (!roomState.boards[markPlayerName]) {
+        // Initialize player's board with false (uncrossed) values
+        roomState.boards[markPlayerName] = {
+          red: Array(11).fill(false),
+          yellow: Array(11).fill(false),
+          green: Array(11).fill(false),
+          blue: Array(11).fill(false),
+        };
+      }
+
+      let index;
+      if (color === "red" || color === "yellow") {
+        index = number - 2; // since these rows start at 2
+      } else if (color === "green" || color === "blue") {
+        index = 12 - number; // these rows go backward from 12
+      }
+
+      if (index >= 0 && index < 11) {
+        roomState.boards[markPlayerName][color][index] = true;
+        console.log(
+          `${markPlayerName} marked ${color} cell ${number} as crossed`
+        );
+        broadcastGameState(currentRoom);
+      } else {
+        ws.send(
+          JSON.stringify({
+            type: "error",
+            message: "Invalid cell number.",
           })
         );
       }
