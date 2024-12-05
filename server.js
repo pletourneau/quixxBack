@@ -7,7 +7,17 @@ const wss = new WebSocket.Server({ server });
 
 const PORT = process.env.PORT || 3000;
 
-const rooms = {};
+const rowsConfig = {
+  red: { start: 2, end: 12 },
+  yellow: { start: 2, end: 12 },
+  green: { start: 12, end: 2 },
+  blue: { start: 12, end: 2 },
+};
+
+// Utility to check if a row is ascending (red/yellow) or descending (green/blue)
+function isAscendingRow(color) {
+  return color === "red" || color === "yellow";
+}
 
 function broadcastGameState(room) {
   const roomState = rooms[room].gameState;
@@ -21,6 +31,8 @@ function broadcastGameState(room) {
     boards: roomState.boards || {},
     diceRolledThisTurn: roomState.diceRolledThisTurn || false,
     turnEndedBy: roomState.turnEndedBy || [],
+    penalties: roomState.penalties || {},
+    gameOver: roomState.gameOver || false,
   };
 
   const state = JSON.stringify(gameState);
@@ -31,11 +43,40 @@ function broadcastGameState(room) {
   });
 }
 
+const rooms = {};
+
 wss.on("connection", (ws) => {
   console.log("A player connected");
 
   let currentRoom = null;
   let playerName = null;
+
+  function checkGameOver(room) {
+    const roomState = rooms[room].gameState;
+    if (roomState.gameOver) return; // Already over
+
+    // Game ends if any player has 4 penalties or if two rows locked
+    // Count locked rows
+    let lockedCount = 0;
+    Object.keys(roomState.lockedRows).forEach((c) => {
+      if (roomState.lockedRows[c]) lockedCount++;
+    });
+
+    let fourPenalties = false;
+    Object.keys(roomState.penalties).forEach((p) => {
+      if (roomState.penalties[p] >= 4) {
+        fourPenalties = true;
+      }
+    });
+
+    if (fourPenalties || lockedCount >= 2) {
+      roomState.gameOver = true;
+    }
+
+    if (roomState.gameOver) {
+      broadcastGameState(room);
+    }
+  }
 
   ws.on("message", (message) => {
     const data = JSON.parse(message);
@@ -56,6 +97,15 @@ wss.on("connection", (ws) => {
             diceRolledThisTurn: false,
             turnMarks: {},
             turnEndedBy: [],
+            penalties: {}, // Track penalties per player
+            lockedRows: {
+              red: false,
+              yellow: false,
+              green: false,
+              blue: false,
+            },
+            diceActive: { red: true, yellow: true, green: true, blue: true },
+            gameOver: false,
           },
           clients: [],
           roomCreator: playerName,
@@ -75,8 +125,10 @@ wss.on("connection", (ws) => {
         return;
       }
 
-      if (!rooms[room].gameState.players.some((p) => p.name === playerName)) {
-        rooms[room].gameState.players.push({ name: playerName });
+      const roomState = rooms[room].gameState;
+      if (!roomState.players.some((p) => p.name === playerName)) {
+        roomState.players.push({ name: playerName });
+        roomState.penalties[playerName] = 0; // Initialize penalties
       }
 
       rooms[room].clients.push(ws);
@@ -117,8 +169,12 @@ wss.on("connection", (ws) => {
 
     if (data.type === "rollDice" && currentRoom) {
       const roomState = rooms[currentRoom].gameState;
-      const activePlayer = roomState.turnOrder[roomState.activePlayerIndex];
+      if (roomState.gameOver) {
+        ws.send(JSON.stringify({ type: "error", message: "Game is over." }));
+        return;
+      }
 
+      const activePlayer = roomState.turnOrder[roomState.activePlayerIndex];
       if (activePlayer === playerName) {
         if (roomState.diceRolledThisTurn) {
           ws.send(
@@ -130,14 +186,18 @@ wss.on("connection", (ws) => {
           return;
         }
 
-        const diceValues = {
-          white1: Math.floor(Math.random() * 6) + 1,
-          white2: Math.floor(Math.random() * 6) + 1,
-          red: Math.floor(Math.random() * 6) + 1,
-          yellow: Math.floor(Math.random() * 6) + 1,
-          green: Math.floor(Math.random() * 6) + 1,
-          blue: Math.floor(Math.random() * 6) + 1,
+        // Roll only active dice
+        function rollDie() {
+          return Math.floor(Math.random() * 6) + 1;
+        }
+        let diceValues = {
+          white1: rollDie(),
+          white2: rollDie(),
         };
+        if (roomState.diceActive.red) diceValues.red = rollDie();
+        if (roomState.diceActive.yellow) diceValues.yellow = rollDie();
+        if (roomState.diceActive.green) diceValues.green = rollDie();
+        if (roomState.diceActive.blue) diceValues.blue = rollDie();
 
         roomState.diceValues = diceValues;
         roomState.diceRolledThisTurn = true;
@@ -156,23 +216,50 @@ wss.on("connection", (ws) => {
 
     if (data.type === "endTurn" && currentRoom) {
       const roomState = rooms[currentRoom].gameState;
+      if (roomState.gameOver) {
+        ws.send(JSON.stringify({ type: "error", message: "Game is over." }));
+        return;
+      }
+
       if (!roomState.turnEndedBy.includes(playerName)) {
         roomState.turnEndedBy.push(playerName);
       }
 
       // If all players ended turn, move to next turn
-      if (roomState.turnEndedBy.length === roomState.players.length) {
-        // Advance to next player's turn
-        roomState.activePlayerIndex =
-          (roomState.activePlayerIndex + 1) % roomState.turnOrder.length;
-        roomState.diceRolledThisTurn = false;
-        roomState.turnEndedBy = [];
-        roomState.turnOrder.forEach((p) => {
-          roomState.turnMarks[p] = {
-            marksCount: 0,
-            firstMarkWasWhiteSum: false,
-          };
-        });
+      if (
+        roomState.turnEndedBy.length === roomState.players.length &&
+        !roomState.gameOver
+      ) {
+        // Check if active player marked no cells this turn -> penalty
+        const activePlayer = roomState.turnOrder[roomState.activePlayerIndex];
+        const tm = roomState.turnMarks[activePlayer];
+        if (tm.marksCount === 0) {
+          // Active player gets penalty
+          roomState.penalties[activePlayer] =
+            (roomState.penalties[activePlayer] || 0) + 1;
+        }
+
+        checkGameOver(currentRoom);
+        if (roomState.gameOver) {
+          broadcastGameState(currentRoom);
+          return;
+        }
+
+        if (!roomState.gameOver) {
+          // Advance to next player's turn
+          roomState.activePlayerIndex =
+            (roomState.activePlayerIndex + 1) % roomState.turnOrder.length;
+          roomState.diceRolledThisTurn = false;
+          roomState.turnEndedBy = [];
+          roomState.turnOrder.forEach((p) => {
+            roomState.turnMarks[p] = {
+              marksCount: 0,
+              firstMarkWasWhiteSum: false,
+            };
+          });
+
+          checkGameOver(currentRoom);
+        }
       }
 
       broadcastGameState(currentRoom);
@@ -180,8 +267,12 @@ wss.on("connection", (ws) => {
 
     if (data.type === "markCell" && currentRoom) {
       const roomState = rooms[currentRoom].gameState;
-      const { playerName: markPlayerName, color, number } = data;
+      if (roomState.gameOver) {
+        ws.send(JSON.stringify({ type: "error", message: "Game is over." }));
+        return;
+      }
 
+      const { playerName: markPlayerName, color, number } = data;
       if (!roomState.boards[markPlayerName]) {
         roomState.boards[markPlayerName] = {
           red: Array(11).fill(false),
@@ -189,6 +280,17 @@ wss.on("connection", (ws) => {
           green: Array(11).fill(false),
           blue: Array(11).fill(false),
         };
+      }
+
+      // Check if row locked
+      if (roomState.lockedRows[color]) {
+        ws.send(
+          JSON.stringify({
+            type: "error",
+            message: "This row is locked, you cannot mark it.",
+          })
+        );
+        return;
       }
 
       const isActivePlayer =
@@ -208,21 +310,34 @@ wss.on("connection", (ws) => {
         return;
       }
 
-      // Determine allowed sums
       const whiteSum =
         roomState.diceValues.white1 + roomState.diceValues.white2;
-      let validSums = [whiteSum]; // Always can choose white sum
+      let validSums = [whiteSum];
       if (isActivePlayer) {
-        validSums.push(
-          roomState.diceValues.white1 + roomState.diceValues.red,
-          roomState.diceValues.white2 + roomState.diceValues.red,
-          roomState.diceValues.white1 + roomState.diceValues.yellow,
-          roomState.diceValues.white2 + roomState.diceValues.yellow,
-          roomState.diceValues.white1 + roomState.diceValues.green,
-          roomState.diceValues.white2 + roomState.diceValues.green,
-          roomState.diceValues.white1 + roomState.diceValues.blue,
-          roomState.diceValues.white2 + roomState.diceValues.blue
-        );
+        if (roomState.diceActive.red) {
+          validSums.push(
+            roomState.diceValues.white1 + roomState.diceValues.red,
+            roomState.diceValues.white2 + roomState.diceValues.red
+          );
+        }
+        if (roomState.diceActive.yellow) {
+          validSums.push(
+            roomState.diceValues.white1 + roomState.diceValues.yellow,
+            roomState.diceValues.white2 + roomState.diceValues.yellow
+          );
+        }
+        if (roomState.diceActive.green) {
+          validSums.push(
+            roomState.diceValues.white1 + roomState.diceValues.green,
+            roomState.diceValues.white2 + roomState.diceValues.green
+          );
+        }
+        if (roomState.diceActive.blue) {
+          validSums.push(
+            roomState.diceValues.white1 + roomState.diceValues.blue,
+            roomState.diceValues.white2 + roomState.diceValues.blue
+          );
+        }
       }
 
       if (!validSums.includes(number)) {
@@ -246,7 +361,6 @@ wss.on("connection", (ws) => {
           );
           return;
         }
-        // Must be white sum
         if (number !== whiteSum) {
           ws.send(
             JSON.stringify({
@@ -259,12 +373,8 @@ wss.on("connection", (ws) => {
       } else {
         // Active player rules
         if (tm.marksCount === 0) {
-          // First mark
-          // If chosen white sum firstMarkWasWhiteSum = true if number == whiteSum
           tm.firstMarkWasWhiteSum = number === whiteSum;
-          // If first was color sum (not whiteSum), only one mark this turn allowed
         } else if (tm.marksCount === 1) {
-          // Second mark attempt
           if (!tm.firstMarkWasWhiteSum) {
             ws.send(
               JSON.stringify({
@@ -275,11 +385,6 @@ wss.on("connection", (ws) => {
             );
             return;
           }
-          // If first was white sum, second must be color sum. If second is also white sum:
-          // This would violate the new rules. The instructions say if they make two marks:
-          //   1st must be white sum, 2nd can be white+color sum.
-          // If second mark is also the white sum (not allowed), but we've no direct sumType,
-          // we know if number == whiteSum again, that's white sum again, not allowed for second mark.
           if (number === whiteSum) {
             ws.send(
               JSON.stringify({
@@ -291,7 +396,6 @@ wss.on("connection", (ws) => {
             return;
           }
         } else {
-          // Already made two marks this turn
           ws.send(
             JSON.stringify({
               type: "error",
@@ -304,9 +408,12 @@ wss.on("connection", (ws) => {
 
       // Check ordering constraints
       let index;
-      if (color === "red" || color === "yellow") {
+      // The final cell is always at index 10 (0-based), since we have 11 numbers.
+      if (isAscendingRow(color)) {
+        // red/yellow: number - 2 = index
         index = number - 2;
       } else {
+        // green/blue: index = 12 - number
         index = 12 - number;
       }
 
@@ -315,7 +422,7 @@ wss.on("connection", (ws) => {
       rowArray.forEach((marked, i) => {
         if (marked) {
           let cellNumber;
-          if (color === "red" || color === "yellow") {
+          if (isAscendingRow(color)) {
             cellNumber = i + 2;
           } else {
             cellNumber = 12 - i;
@@ -327,37 +434,67 @@ wss.on("connection", (ws) => {
       if (previouslyMarkedNumbers.length > 0) {
         const maxMarked = Math.max(...previouslyMarkedNumbers);
         const minMarked = Math.min(...previouslyMarkedNumbers);
-        if (color === "red" || color === "yellow") {
-          if (number < maxMarked) {
-            ws.send(
-              JSON.stringify({
-                type: "error",
-                message:
-                  "You cannot mark a smaller number than one already marked in red/yellow.",
-              })
-            );
-            return;
-          }
-        } else {
-          // green/blue
-          if (number > minMarked) {
-            ws.send(
-              JSON.stringify({
-                type: "error",
-                message:
-                  "You cannot mark a larger number than one already marked in green/blue.",
-              })
-            );
-            return;
-          }
+        if (isAscendingRow(color) && number < maxMarked) {
+          ws.send(
+            JSON.stringify({
+              type: "error",
+              message:
+                "You cannot mark a smaller number than one already marked in this row.",
+            })
+          );
+          return;
+        }
+        if (!isAscendingRow(color) && number > minMarked) {
+          ws.send(
+            JSON.stringify({
+              type: "error",
+              message:
+                "You cannot mark a larger number than one already marked in this row.",
+            })
+          );
+          return;
         }
       }
 
-      // All checks passed, mark the cell
+      // Check if final number is chosen (12 for red/yellow, 2 for green/blue)
+      // Final number is always at index 10
+      const finalNumberIndex = 10;
+      let finalNumber;
+      if (isAscendingRow(color)) finalNumber = 12;
+      else finalNumber = 2;
+
+      if (number === finalNumber) {
+        // Must have at least 5 other marks before marking final
+        const marksInRow = rowArray.filter((x) => x).length;
+        if (marksInRow < 5) {
+          ws.send(
+            JSON.stringify({
+              type: "error",
+              message:
+                "You must have at least 5 marks in this row before marking the final number.",
+            })
+          );
+          return;
+        }
+      }
+
+      // Mark the cell
       rowArray[index] = true;
       tm.marksCount += 1;
       roomState.turnMarks[markPlayerName] = tm;
+
+      // If final number was chosen, lock the row
+      if (number === finalNumber) {
+        // Also mark the lock cell automatically (the final cell + 1 in display is just the lock cell visually)
+        // The lock cell is not in the array, but we consider the row locked
+        roomState.lockedRows[color] = true;
+        roomState.diceActive[color] = false;
+      }
+
       broadcastGameState(currentRoom);
+
+      // Check game over conditions
+      checkGameOver(currentRoom);
     }
   });
 
