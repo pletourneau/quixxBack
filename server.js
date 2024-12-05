@@ -20,6 +20,7 @@ function broadcastGameState(room) {
     })),
     turnOrder: rooms[room].gameState.turnOrder,
     activePlayerIndex: rooms[room].gameState.activePlayerIndex,
+    diceValues: rooms[room].gameState.diceValues || null,
   };
 
   console.log("Broadcasting game state:", gameState);
@@ -54,6 +55,7 @@ wss.on("connection", (ws) => {
             players: [],
             turnOrder: [],
             activePlayerIndex: 0,
+            diceValues: null,
           },
           clients: [],
           roomCreator: playerName,
@@ -73,7 +75,6 @@ wss.on("connection", (ws) => {
         return;
       }
 
-      // Ensure player is added only once
       if (!rooms[room].gameState.players.some((p) => p.name === playerName)) {
         rooms[room].gameState.players.push({ name: playerName });
       }
@@ -89,24 +90,17 @@ wss.on("connection", (ws) => {
     // Start Game
     if (data.type === "startGame" && currentRoom) {
       const roomState = rooms[currentRoom].gameState;
-      console.log("Players before starting the game:", roomState.players);
+
       if (rooms[currentRoom].roomCreator === playerName) {
         roomState.turnOrder = roomState.players
           .map((player) => player.name)
-          .sort(() => Math.random() - 0.5); // Shuffle the players for turn order
+          .sort(() => Math.random() - 0.5);
 
         roomState.activePlayerIndex = Math.floor(
           Math.random() * roomState.turnOrder.length
         );
         roomState.started = true;
-        console.log("Shuffled turn order:", roomState.turnOrder);
         broadcastGameState(currentRoom);
-        console.log(`Game started by room creator: ${playerName}`);
-
-        console.log(
-          "Starting with player:",
-          roomState.turnOrder[roomState.activePlayerIndex]
-        );
       } else {
         ws.send(
           JSON.stringify({
@@ -117,30 +111,23 @@ wss.on("connection", (ws) => {
       }
     }
 
-    // End Turn
-    if (data.type === "endTurn" && currentRoom) {
+    // Roll Dice
+    if (data.type === "rollDice" && currentRoom) {
       const roomState = rooms[currentRoom].gameState;
 
-      // Check if the player has already ended their turn
-      if (!roomState.turnEndedBy.includes(playerName)) {
-        roomState.turnEndedBy.push(playerName);
-        console.log(`${playerName} ended their turn.`);
+      if (roomState.turnOrder[roomState.activePlayerIndex] === playerName) {
+        const diceValues = {
+          white1: Math.floor(Math.random() * 6) + 1,
+          white2: Math.floor(Math.random() * 6) + 1,
+          red: Math.floor(Math.random() * 6) + 1,
+          yellow: Math.floor(Math.random() * 6) + 1,
+          green: Math.floor(Math.random() * 6) + 1,
+          blue: Math.floor(Math.random() * 6) + 1,
+        };
 
-        // Check if all players have ended their turn
-        if (roomState.turnEndedBy.length === roomState.players.length) {
-          // Reset turnEndedBy for the next turn
-          roomState.turnEndedBy = [];
+        roomState.diceValues = diceValues;
 
-          // Move to the next active player
-          roomState.activePlayerIndex =
-            (roomState.activePlayerIndex + 1) % roomState.turnOrder.length;
-
-          console.log(
-            `All players ended their turn. Next active player: ${
-              roomState.turnOrder[roomState.activePlayerIndex]
-            }`
-          );
-        }
+        console.log(`Dice rolled by ${playerName}:`, diceValues);
 
         // Broadcast the updated game state
         broadcastGameState(currentRoom);
@@ -148,14 +135,37 @@ wss.on("connection", (ws) => {
         ws.send(
           JSON.stringify({
             type: "error",
-            message: "You have already ended your turn.",
+            message: "You are not the active player. Wait for your turn.",
+          })
+        );
+      }
+    }
+
+    // End Turn
+    if (data.type === "endTurn" && currentRoom) {
+      const roomState = rooms[currentRoom].gameState;
+
+      if (roomState.turnOrder[roomState.activePlayerIndex] === playerName) {
+        roomState.activePlayerIndex =
+          (roomState.activePlayerIndex + 1) % roomState.turnOrder.length;
+        console.log(
+          `Turn ended by ${playerName}. Next active player: ${
+            roomState.turnOrder[roomState.activePlayerIndex]
+          }`
+        );
+
+        broadcastGameState(currentRoom);
+      } else {
+        ws.send(
+          JSON.stringify({
+            type: "error",
+            message: "It's not your turn to end the turn.",
           })
         );
       }
     }
   });
 
-  // Handle Disconnection
   ws.on("close", () => {
     if (currentRoom) {
       rooms[currentRoom].clients = rooms[currentRoom].clients.filter(
@@ -173,7 +183,6 @@ wss.on("connection", (ws) => {
           currentRoom
         ].gameState.turnOrder.filter((name) => name !== playerName);
 
-        // Adjust the active player index if needed
         if (
           rooms[currentRoom].gameState.activePlayerIndex >=
           rooms[currentRoom].gameState.turnOrder.length
