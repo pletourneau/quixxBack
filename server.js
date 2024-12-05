@@ -21,6 +21,7 @@ function broadcastGameState(room) {
     turnOrder: rooms[room].gameState.turnOrder,
     activePlayerIndex: rooms[room].gameState.activePlayerIndex,
     diceValues: rooms[room].gameState.diceValues || null,
+    boards: rooms[room].gameState.boards || {},
   };
 
   console.log("Broadcasting game state:", gameState);
@@ -170,13 +171,8 @@ wss.on("connection", (ws) => {
       const roomState = rooms[currentRoom].gameState;
       const { playerName: markPlayerName, color, number } = data;
 
-      // Ensure boards structure exists
-      if (!roomState.boards) {
-        roomState.boards = {};
-      }
-
+      // Ensure boards structure exists for this player
       if (!roomState.boards[markPlayerName]) {
-        // Initialize player's board with false (uncrossed) values
         roomState.boards[markPlayerName] = {
           red: Array(11).fill(false),
           yellow: Array(11).fill(false),
@@ -187,9 +183,9 @@ wss.on("connection", (ws) => {
 
       let index;
       if (color === "red" || color === "yellow") {
-        index = number - 2; // since these rows start at 2
+        index = number - 2;
       } else if (color === "green" || color === "blue") {
-        index = 12 - number; // these rows go backward from 12
+        index = 12 - number;
       }
 
       if (index >= 0 && index < 11) {
