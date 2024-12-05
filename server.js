@@ -54,7 +54,7 @@ wss.on("connection", (ws) => {
             diceValues: null,
             boards: {},
             diceRolledThisTurn: false,
-            turnMarks: {}, // Track marks per player per turn
+            turnMarks: {},
             turnEndedBy: [],
           },
           clients: [],
@@ -156,34 +156,31 @@ wss.on("connection", (ws) => {
 
     if (data.type === "endTurn" && currentRoom) {
       const roomState = rooms[currentRoom].gameState;
-      const activePlayer = roomState.turnOrder[roomState.activePlayerIndex];
-      if (activePlayer === playerName) {
+      if (!roomState.turnEndedBy.includes(playerName)) {
+        roomState.turnEndedBy.push(playerName);
+      }
+
+      // If all players ended turn, move to next turn
+      if (roomState.turnEndedBy.length === roomState.players.length) {
+        // Advance to next player's turn
         roomState.activePlayerIndex =
           (roomState.activePlayerIndex + 1) % roomState.turnOrder.length;
-        // Reset diceRolledThisTurn and turnMarks for the next turn
         roomState.diceRolledThisTurn = false;
-        roomState.turnEndedBy.push(playerName);
-        // Reset marksCount for all players next turn
+        roomState.turnEndedBy = [];
         roomState.turnOrder.forEach((p) => {
           roomState.turnMarks[p] = {
             marksCount: 0,
             firstMarkWasWhiteSum: false,
           };
         });
-        broadcastGameState(currentRoom);
-      } else {
-        ws.send(
-          JSON.stringify({
-            type: "error",
-            message: "It's not your turn to end the turn.",
-          })
-        );
       }
+
+      broadcastGameState(currentRoom);
     }
 
     if (data.type === "markCell" && currentRoom) {
       const roomState = rooms[currentRoom].gameState;
-      const { playerName: markPlayerName, color, number, sumType } = data;
+      const { playerName: markPlayerName, color, number } = data;
 
       if (!roomState.boards[markPlayerName]) {
         roomState.boards[markPlayerName] = {
@@ -196,8 +193,11 @@ wss.on("connection", (ws) => {
 
       const isActivePlayer =
         roomState.turnOrder[roomState.activePlayerIndex] === markPlayerName;
+      const tm = roomState.turnMarks[markPlayerName] || {
+        marksCount: 0,
+        firstMarkWasWhiteSum: false,
+      };
 
-      // Validate chosen sum
       if (!roomState.diceValues) {
         ws.send(
           JSON.stringify({
@@ -208,10 +208,10 @@ wss.on("connection", (ws) => {
         return;
       }
 
+      // Determine allowed sums
       const whiteSum =
         roomState.diceValues.white1 + roomState.diceValues.white2;
-      let validSums = [whiteSum]; // always can choose white sum
-      // white+color sums
+      let validSums = [whiteSum]; // Always can choose white sum
       if (isActivePlayer) {
         validSums.push(
           roomState.diceValues.white1 + roomState.diceValues.red,
@@ -235,30 +235,19 @@ wss.on("connection", (ws) => {
         return;
       }
 
-      // Check marking rules
-      const tm = roomState.turnMarks[markPlayerName];
-      if (!tm) {
-        // If somehow not initialized, init now
-        roomState.turnMarks[markPlayerName] = {
-          marksCount: 0,
-          firstMarkWasWhiteSum: false,
-        };
-      }
-
-      // Non-active player rules
       if (!isActivePlayer) {
         // Non-active: only one mark (white sum)
         if (tm.marksCount >= 1) {
           ws.send(
             JSON.stringify({
               type: "error",
-              message: "Non-active player can only mark once.",
+              message: "Non-active player can only mark once per turn.",
             })
           );
           return;
         }
         // Must be white sum
-        if (sumType !== "white" || number !== whiteSum) {
+        if (number !== whiteSum) {
           ws.send(
             JSON.stringify({
               type: "error",
@@ -270,36 +259,33 @@ wss.on("connection", (ws) => {
       } else {
         // Active player rules
         if (tm.marksCount === 0) {
-          // First mark of this turn
-          // If they choose white sum first, firstMarkWasWhiteSum = true
-          // If color sum first, firstMarkWasWhiteSum = false and they can't do a second mark
-          tm.firstMarkWasWhiteSum = sumType === "white" && number === whiteSum;
-          // If they chose color sum first, that means only one mark this turn
+          // First mark
+          // If chosen white sum firstMarkWasWhiteSum = true if number == whiteSum
+          tm.firstMarkWasWhiteSum = number === whiteSum;
+          // If first was color sum (not whiteSum), only one mark this turn allowed
         } else if (tm.marksCount === 1) {
           // Second mark attempt
           if (!tm.firstMarkWasWhiteSum) {
-            // If first was not white sum, can't do second mark
             ws.send(
               JSON.stringify({
                 type: "error",
                 message:
-                  "Second mark not allowed since first wasn't white sum.",
+                  "To make a second mark, the first must have been the white dice sum.",
               })
             );
             return;
           }
-          // If first was white sum, second must be a color sum if they want two
-          if (
-            tm.firstMarkWasWhiteSum &&
-            sumType === "white" &&
-            number === whiteSum
-          ) {
-            // second mark is white sum again? Not allowed by the new rules
-            // They said second mark optional can be white+color sum, not white sum again
+          // If first was white sum, second must be color sum. If second is also white sum:
+          // This would violate the new rules. The instructions say if they make two marks:
+          //   1st must be white sum, 2nd can be white+color sum.
+          // If second mark is also the white sum (not allowed), but we've no direct sumType,
+          // we know if number == whiteSum again, that's white sum again, not allowed for second mark.
+          if (number === whiteSum) {
             ws.send(
               JSON.stringify({
                 type: "error",
-                message: "Second mark must be from a white+color sum.",
+                message:
+                  "Second mark must be from a white+color sum (not white sum again).",
               })
             );
             return;
@@ -316,19 +302,14 @@ wss.on("connection", (ws) => {
         }
       }
 
-      // Check order constraints
-      // Convert color/number to index
+      // Check ordering constraints
       let index;
       if (color === "red" || color === "yellow") {
-        index = number - 2; // array from 2..12
+        index = number - 2;
       } else {
-        index = 12 - number; // array from 12..2
+        index = 12 - number;
       }
 
-      // Check ordering:
-      // For red/yellow: must mark a number >= all previously marked
-      // means: chosen number >= max previously marked number
-      // For green/blue: chosen number <= min previously marked number
       const rowArray = roomState.boards[markPlayerName][color];
       let previouslyMarkedNumbers = [];
       rowArray.forEach((marked, i) => {
@@ -347,26 +328,24 @@ wss.on("connection", (ws) => {
         const maxMarked = Math.max(...previouslyMarkedNumbers);
         const minMarked = Math.min(...previouslyMarkedNumbers);
         if (color === "red" || color === "yellow") {
-          // chosen number >= maxMarked
           if (number < maxMarked) {
             ws.send(
               JSON.stringify({
                 type: "error",
                 message:
-                  "You cannot mark a number smaller than one already marked in red/yellow.",
+                  "You cannot mark a smaller number than one already marked in red/yellow.",
               })
             );
             return;
           }
         } else {
           // green/blue
-          // chosen number <= minMarked
           if (number > minMarked) {
             ws.send(
               JSON.stringify({
                 type: "error",
                 message:
-                  "You cannot mark a number larger than one already marked in green/blue.",
+                  "You cannot mark a larger number than one already marked in green/blue.",
               })
             );
             return;
@@ -377,10 +356,7 @@ wss.on("connection", (ws) => {
       // All checks passed, mark the cell
       rowArray[index] = true;
       tm.marksCount += 1;
-
-      console.log(
-        `${markPlayerName} marked ${color} cell ${number}. marksCount=${tm.marksCount}, firstWhite=${tm.firstMarkWasWhiteSum}`
-      );
+      roomState.turnMarks[markPlayerName] = tm;
       broadcastGameState(currentRoom);
     }
   });
