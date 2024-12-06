@@ -311,7 +311,6 @@ wss.on("connection", (ws) => {
           addIfActive("blue", val1, val2);
         }
 
-        // Validate each mark
         for (const mark of marks) {
           const { color, number } = mark;
 
@@ -403,7 +402,7 @@ wss.on("connection", (ws) => {
             }
           }
 
-          // If number != whiteSum, must ensure chosen color is allowed for that sum
+          // Check if number != whiteSum means color sum must match the row color
           if (number !== whiteSum) {
             const possibleColors = sumToColors[number];
             if (!possibleColors || !possibleColors.includes(color)) {
@@ -434,11 +433,9 @@ wss.on("connection", (ws) => {
           }
         }
 
-        // All marks valid, apply them
         roomState.boards = newBoards;
         roomState.turnMarks[activePlayer] = localTM;
       } else {
-        // No dice rolled this turn
         const activePlayer = roomState.turnOrder[roomState.activePlayerIndex];
         const tm = roomState.turnMarks[activePlayer];
         if (tm.marksCount === 0 && marks.length > 0) {
