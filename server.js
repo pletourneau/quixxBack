@@ -18,8 +18,7 @@ function isAscendingRow(color) {
   return color === "red" || color === "yellow";
 }
 
-// Scoring table for Qwixx
-// numberOfCrosses: score
+// Scoring table
 const scoringTable = {
   0: 0,
   1: 1,
@@ -106,15 +105,11 @@ function checkGameOver(room) {
   if (roomState.gameOver) return;
 
   // Check conditions
-  // 1) Any player has 4 penalties
   let fourPenalties = false;
   Object.keys(roomState.penalties).forEach((p) => {
-    if (roomState.penalties[p] >= 4) {
-      fourPenalties = true;
-    }
+    if (roomState.penalties[p] >= 4) fourPenalties = true;
   });
 
-  // 2) Two rows locked
   let lockedCount = 0;
   Object.keys(roomState.lockedRows).forEach((c) => {
     if (roomState.lockedRows[c]) lockedCount++;
@@ -122,7 +117,6 @@ function checkGameOver(room) {
 
   if (fourPenalties || lockedCount >= 2) {
     roomState.gameOver = true;
-    // Compute scoreboard
     roomState.scoreboard = computeScoreboard(roomState);
   }
 }
@@ -139,7 +133,6 @@ wss.on("connection", (ws) => {
     if (data.type === "joinRoom") {
       const room = data.passcode;
       playerName = data.playerName;
-
       if (!rooms[room]) {
         rooms[room] = {
           gameState: {
@@ -166,7 +159,6 @@ wss.on("connection", (ws) => {
           clients: [],
           roomCreator: playerName,
         };
-
         ws.send(JSON.stringify({ type: "newGame", room }));
         console.log(`Room ${room} created by ${playerName}`);
       }
@@ -234,7 +226,7 @@ wss.on("connection", (ws) => {
           ws.send(
             JSON.stringify({
               type: "error",
-              message: "You have already rolled the dice this turn.",
+              message: "Dice have already been rolled this turn.",
             })
           );
           return;
@@ -274,6 +266,263 @@ wss.on("connection", (ws) => {
         return;
       }
 
+      // Data might contain marks chosen this turn
+      const marks = data.marks || [];
+      // Validate and apply marks
+      if (roomState.diceRolledThisTurn) {
+        // Let's apply chosen marks now
+        // We must follow the same rules as previously for each mark
+        const activePlayer = roomState.turnOrder[roomState.activePlayerIndex];
+        const tm = roomState.turnMarks[activePlayer];
+
+        // We'll create a copy of boards to apply marks after validation
+        let newBoards = JSON.parse(JSON.stringify(roomState.boards));
+        let localTM = {
+          marksCount: tm.marksCount,
+          firstMarkWasWhiteSum: tm.firstMarkWasWhiteSum,
+        };
+
+        // Gather sums info
+        const whiteSum =
+          roomState.diceValues.white1 + roomState.diceValues.white2;
+        let validSums = [whiteSum];
+        let sumToColors = {};
+        sumToColors[whiteSum] = ["white"];
+
+        function addColorSum(num, color) {
+          if (!sumToColors[num]) sumToColors[num] = [];
+          if (!sumToColors[num].includes(color)) sumToColors[num].push(color);
+        }
+
+        // Add color sums if active dice
+        const addIfActive = (c, val1, val2) => {
+          if (roomState.diceActive[c]) {
+            validSums.push(val1, val2);
+            addColorSum(val1, c);
+            addColorSum(val2, c);
+          }
+        };
+
+        addIfActive(
+          "red",
+          roomState.diceValues.white1 + (roomState.diceValues.red || 0),
+          roomState.diceValues.white2 + (roomState.diceValues.red || 0)
+        );
+        addIfActive(
+          "yellow",
+          roomState.diceValues.white1 + (roomState.diceValues.yellow || 0),
+          roomState.diceValues.white2 + (roomState.diceValues.yellow || 0)
+        );
+        addIfActive(
+          "green",
+          roomState.diceValues.white1 + (roomState.diceValues.green || 0),
+          roomState.diceValues.white2 + (roomState.diceValues.green || 0)
+        );
+        addIfActive(
+          "blue",
+          roomState.diceValues.white1 + (roomState.diceValues.blue || 0),
+          roomState.diceValues.white2 + (roomState.diceValues.blue || 0)
+        );
+
+        // Validate each mark
+        for (const mark of marks) {
+          const { color, number } = mark;
+
+          if (roomState.lockedRows[color]) {
+            ws.send(
+              JSON.stringify({ type: "error", message: "This row is locked." })
+            );
+            return;
+          }
+
+          if (!validSums.includes(number)) {
+            ws.send(
+              JSON.stringify({
+                type: "error",
+                message: "Chosen cell does not match any allowed sums.",
+              })
+            );
+            return;
+          }
+
+          const rowArray = newBoards[activePlayer][color];
+          let index;
+          if (isAscendingRow(color)) {
+            index = number - 2;
+          } else {
+            index = 12 - number;
+          }
+
+          if (rowArray[index]) {
+            ws.send(
+              JSON.stringify({ type: "error", message: "Cell already marked." })
+            );
+            return;
+          }
+
+          // Check ordering
+          let previouslyMarkedNumbers = [];
+          rowArray.forEach((marked, i) => {
+            if (marked) {
+              let cellNumber;
+              if (isAscendingRow(color)) cellNumber = i + 2;
+              else cellNumber = 12 - i;
+              previouslyMarkedNumbers.push(cellNumber);
+            }
+          });
+
+          if (previouslyMarkedNumbers.length > 0) {
+            const maxMarked = Math.max(...previouslyMarkedNumbers);
+            const minMarked = Math.min(...previouslyMarkedNumbers);
+            if (isAscendingRow(color) && number < maxMarked) {
+              ws.send(
+                JSON.stringify({
+                  type: "error",
+                  message:
+                    "Cannot mark a smaller number than one already marked.",
+                })
+              );
+              return;
+            }
+            if (!isAscendingRow(color) && number > minMarked) {
+              ws.send(
+                JSON.stringify({
+                  type: "error",
+                  message:
+                    "Cannot mark a larger number than one already marked.",
+                })
+              );
+              return;
+            }
+          }
+
+          // Check active player rules vs non-active
+          const isActivePlayerTurn = activePlayer === markPlayerName;
+          if (!isActivePlayerTurn) {
+            // Non active: only one mark and must be white sum
+            if (localTM.marksCount >= 1) {
+              ws.send(
+                JSON.stringify({
+                  type: "error",
+                  message: "Non-active player can only mark once per turn.",
+                })
+              );
+              return;
+            }
+            if (number !== whiteSum) {
+              ws.send(
+                JSON.stringify({
+                  type: "error",
+                  message: "Non-active player must mark the white dice sum.",
+                })
+              );
+              return;
+            }
+          } else {
+            // Active player logic
+            if (localTM.marksCount === 0) {
+              localTM.firstMarkWasWhiteSum = number === whiteSum;
+            } else if (localTM.marksCount === 1) {
+              if (!localTM.firstMarkWasWhiteSum) {
+                ws.send(
+                  JSON.stringify({
+                    type: "error",
+                    message:
+                      "To make a second mark, the first must be the white dice sum.",
+                  })
+                );
+                return;
+              }
+              if (number === whiteSum) {
+                ws.send(
+                  JSON.stringify({
+                    type: "error",
+                    message:
+                      "Second mark must be a white+color sum, not white sum again.",
+                  })
+                );
+                return;
+              }
+            } else {
+              ws.send(
+                JSON.stringify({
+                  type: "error",
+                  message: "You have already marked two numbers this turn.",
+                })
+              );
+              return;
+            }
+          }
+
+          // If number != whiteSum, it's a color sum. Must ensure chosen color is allowed for that sum
+          if (number !== whiteSum) {
+            // Check sumToColors
+            const possibleColors = sumToColors[number];
+            if (!possibleColors || !possibleColors.includes(color)) {
+              ws.send(
+                JSON.stringify({
+                  type: "error",
+                  message:
+                    "For a white+color sum, you must mark the row of that color.",
+                })
+              );
+              return;
+            }
+          }
+
+          // Check final number condition
+          let finalNumber = isAscendingRow(color) ? 12 : 2;
+          if (number === finalNumber) {
+            const marksInRow = rowArray.filter((x) => x).length;
+            if (marksInRow < 5) {
+              ws.send(
+                JSON.stringify({
+                  type: "error",
+                  message:
+                    "You must have at least 5 marks before marking the final number.",
+                })
+              );
+              return;
+            }
+          }
+
+          // If all checks pass, mark it
+          rowArray[index] = true;
+          localTM.marksCount += 1;
+
+          // If final number was chosen, lock the row
+          if (number === finalNumber) {
+            roomState.lockedRows[color] = true;
+            roomState.diceActive[color] = false;
+          }
+        }
+
+        // If we reach here, all marks are valid. Apply them
+        roomState.boards = newBoards;
+        roomState.turnMarks[activePlayer] = localTM;
+      } else {
+        // No dice rolled and they try to end turn
+        // If no dice rolled and no marks chosen, active player gets penalty
+        const activePlayer = roomState.turnOrder[roomState.activePlayerIndex];
+        const tm = roomState.turnMarks[activePlayer];
+        if (tm.marksCount === 0 && marks.length > 0) {
+          // they tried to mark without dice rolled - already error would have triggered in marking logic
+          ws.send(
+            JSON.stringify({
+              type: "error",
+              message: "No dice rolled this turn, cannot mark.",
+            })
+          );
+          return;
+        }
+        if (tm.marksCount === 0 && marks.length === 0) {
+          // no dice rolled no marks = penalty for active player
+          roomState.penalties[activePlayer] =
+            (roomState.penalties[activePlayer] || 0) + 1;
+        }
+      }
+
+      // Now end turn
       if (!roomState.turnEndedBy.includes(playerName)) {
         roomState.turnEndedBy.push(playerName);
       }
@@ -282,15 +531,7 @@ wss.on("connection", (ws) => {
         roomState.turnEndedBy.length === roomState.players.length &&
         !roomState.gameOver
       ) {
-        // Check if active player made no marks this turn
-        const activePlayer = roomState.turnOrder[roomState.activePlayerIndex];
-        const tm = roomState.turnMarks[activePlayer];
-        if (tm.marksCount === 0) {
-          // Active player penalty
-          roomState.penalties[activePlayer] =
-            (roomState.penalties[activePlayer] || 0) + 1;
-        }
-
+        // Check if active player made no marks -> already handled above
         checkGameOver(currentRoom);
         if (roomState.gameOver) {
           broadcastGameState(currentRoom);
@@ -313,235 +554,6 @@ wss.on("connection", (ws) => {
       }
 
       broadcastGameState(currentRoom);
-    }
-
-    if (data.type === "markCell" && currentRoom) {
-      const roomState = rooms[currentRoom].gameState;
-      if (roomState.gameOver) {
-        ws.send(JSON.stringify({ type: "error", message: "Game is over." }));
-        return;
-      }
-
-      const { playerName: markPlayerName, color, number } = data;
-      if (!roomState.boards[markPlayerName]) {
-        roomState.boards[markPlayerName] = {
-          red: Array(11).fill(false),
-          yellow: Array(11).fill(false),
-          green: Array(11).fill(false),
-          blue: Array(11).fill(false),
-        };
-      }
-
-      if (!roomState.diceRolledThisTurn) {
-        ws.send(
-          JSON.stringify({
-            type: "error",
-            message: "You cannot mark before dice are rolled this turn.",
-          })
-        );
-        return;
-      }
-
-      if (roomState.lockedRows[color]) {
-        ws.send(
-          JSON.stringify({ type: "error", message: "This row is locked." })
-        );
-        return;
-      }
-
-      const isActivePlayer =
-        roomState.turnOrder[roomState.activePlayerIndex] === markPlayerName;
-      const tm = roomState.turnMarks[markPlayerName] || {
-        marksCount: 0,
-        firstMarkWasWhiteSum: false,
-      };
-
-      if (!roomState.diceValues) {
-        ws.send(
-          JSON.stringify({
-            type: "error",
-            message: "No dice values rolled this turn.",
-          })
-        );
-        return;
-      }
-
-      const whiteSum =
-        roomState.diceValues.white1 + roomState.diceValues.white2;
-      let validSums = [whiteSum];
-
-      function colorDiceActive(color) {
-        return roomState.diceActive[color];
-      }
-
-      if (isActivePlayer) {
-        if (colorDiceActive("red")) {
-          validSums.push(
-            roomState.diceValues.white1 + roomState.diceValues.red,
-            roomState.diceValues.white2 + roomState.diceValues.red
-          );
-        }
-        if (colorDiceActive("yellow")) {
-          validSums.push(
-            roomState.diceValues.white1 + roomState.diceValues.yellow,
-            roomState.diceValues.white2 + roomState.diceValues.yellow
-          );
-        }
-        if (colorDiceActive("green")) {
-          validSums.push(
-            roomState.diceValues.white1 + roomState.diceValues.green,
-            roomState.diceValues.white2 + roomState.diceValues.green
-          );
-        }
-        if (colorDiceActive("blue")) {
-          validSums.push(
-            roomState.diceValues.white1 + roomState.diceValues.blue,
-            roomState.diceValues.white2 + roomState.diceValues.blue
-          );
-        }
-      }
-
-      if (!validSums.includes(number)) {
-        ws.send(
-          JSON.stringify({
-            type: "error",
-            message: "Chosen cell does not match any allowed sums.",
-          })
-        );
-        return;
-      }
-
-      if (!isActivePlayer) {
-        if (tm.marksCount >= 1) {
-          ws.send(
-            JSON.stringify({
-              type: "error",
-              message: "Non-active player can only mark once per turn.",
-            })
-          );
-          return;
-        }
-        if (number !== whiteSum) {
-          ws.send(
-            JSON.stringify({
-              type: "error",
-              message: "Non-active player must mark the white dice sum.",
-            })
-          );
-          return;
-        }
-      } else {
-        if (tm.marksCount === 0) {
-          tm.firstMarkWasWhiteSum = number === whiteSum;
-        } else if (tm.marksCount === 1) {
-          if (!tm.firstMarkWasWhiteSum) {
-            ws.send(
-              JSON.stringify({
-                type: "error",
-                message:
-                  "To make a second mark, the first must be the white dice sum.",
-              })
-            );
-            return;
-          }
-          if (number === whiteSum) {
-            ws.send(
-              JSON.stringify({
-                type: "error",
-                message:
-                  "Second mark must be a white+color sum, not white sum again.",
-              })
-            );
-            return;
-          }
-        } else {
-          ws.send(
-            JSON.stringify({
-              type: "error",
-              message: "You have already marked two numbers this turn.",
-            })
-          );
-          return;
-        }
-      }
-
-      let index;
-      if (isAscendingRow(color)) {
-        index = number - 2;
-      } else {
-        index = 12 - number;
-      }
-
-      const rowArray = roomState.boards[markPlayerName][color];
-      let previouslyMarkedNumbers = [];
-      rowArray.forEach((marked, i) => {
-        if (marked) {
-          let cellNumber;
-          if (isAscendingRow(color)) {
-            cellNumber = i + 2;
-          } else {
-            cellNumber = 12 - i;
-          }
-          previouslyMarkedNumbers.push(cellNumber);
-        }
-      });
-
-      if (previouslyMarkedNumbers.length > 0) {
-        const maxMarked = Math.max(...previouslyMarkedNumbers);
-        const minMarked = Math.min(...previouslyMarkedNumbers);
-        if (isAscendingRow(color) && number < maxMarked) {
-          ws.send(
-            JSON.stringify({
-              type: "error",
-              message: "Cannot mark a smaller number than one already marked.",
-            })
-          );
-          return;
-        }
-        if (!isAscendingRow(color) && number > minMarked) {
-          ws.send(
-            JSON.stringify({
-              type: "error",
-              message: "Cannot mark a larger number than one already marked.",
-            })
-          );
-          return;
-        }
-      }
-
-      // Check if final number
-      let finalNumber = isAscendingRow(color) ? 12 : 2;
-      if (number === finalNumber) {
-        const marksInRow = rowArray.filter((x) => x).length;
-        if (marksInRow < 5) {
-          ws.send(
-            JSON.stringify({
-              type: "error",
-              message:
-                "You must have at least 5 marks before marking the final number.",
-            })
-          );
-          return;
-        }
-      }
-
-      // Mark the cell
-      rowArray[index] = true;
-      tm.marksCount += 1;
-      roomState.turnMarks[markPlayerName] = tm;
-
-      if (number === finalNumber) {
-        roomState.lockedRows[color] = true;
-        roomState.diceActive[color] = false;
-      }
-
-      broadcastGameState(currentRoom);
-
-      // Check game over now that a mark was made
-      checkGameOver(currentRoom);
-      if (roomState.gameOver) {
-        broadcastGameState(currentRoom);
-      }
     }
   });
 
