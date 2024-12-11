@@ -158,6 +158,8 @@ wss.on("connection", (ws) => {
             diceActive: { red: true, yellow: true, green: true, blue: true },
             gameOver: false,
             scoreboard: null,
+            // rowsToLock will hold rows that need to be locked at end of turn
+            rowsToLock: {},
           },
           clients: [],
           roomCreator: playerName,
@@ -252,13 +254,13 @@ wss.on("connection", (ws) => {
       }
     }
 
-    // Immediate mark logic on server done by markCell action
     if (data.type === "markCell" && currentRoom) {
       const roomState = rooms[currentRoom].gameState;
       if (roomState.gameOver) {
         sendErrorAndState(ws, currentRoom, "Game is over.");
         return;
       }
+
       const { playerName: markPlayerName, color, number } = data;
 
       if (!roomState.diceRolledThisTurn) {
@@ -440,18 +442,6 @@ wss.on("connection", (ws) => {
         }
       }
 
-      if (number !== whiteSum) {
-        const possibleColors = sumToColors[number];
-        if (!possibleColors || !possibleColors.includes(color)) {
-          sendErrorAndState(
-            ws,
-            currentRoom,
-            "For a white+color sum, you must mark the row of that color."
-          );
-          return;
-        }
-      }
-
       let finalNumber = isAscendingRow(color) ? 12 : 2;
       if (number === finalNumber) {
         const marksInRow = rowArray.filter((x) => x).length;
@@ -463,16 +453,17 @@ wss.on("connection", (ws) => {
           );
           return;
         }
+
+        // Instead of locking immediately, record that this row should be locked at end of turn
+        if (!roomState.rowsToLock) {
+          roomState.rowsToLock = {};
+        }
+        roomState.rowsToLock[color] = true;
       }
 
       rowArray[index] = true;
       tm.marksCount += 1;
       roomState.turnMarks[markPlayerName] = tm;
-
-      if (number === finalNumber) {
-        roomState.lockedRows[color] = true;
-        roomState.diceActive[color] = false;
-      }
 
       broadcastGameState(currentRoom);
     }
@@ -498,6 +489,17 @@ wss.on("connection", (ws) => {
         if (tm.marksCount === 0 && roomState.diceRolledThisTurn) {
           roomState.penalties[activePlayer] =
             (roomState.penalties[activePlayer] || 0) + 1;
+        }
+
+        // Apply row locks now at the end of the turn
+        if (roomState.rowsToLock) {
+          Object.keys(roomState.rowsToLock).forEach((color) => {
+            if (roomState.rowsToLock[color]) {
+              roomState.lockedRows[color] = true;
+              roomState.diceActive[color] = false;
+            }
+          });
+          roomState.rowsToLock = {};
         }
 
         checkGameOver(currentRoom);
