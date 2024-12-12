@@ -7,6 +7,11 @@ const wss = new WebSocket.Server({ server });
 
 const PORT = process.env.PORT || 3000;
 
+// A simple route to verify the server is running
+app.get("/", (req, res) => {
+  res.send("Server is running and ready for WebSocket connections!");
+});
+
 const rowsConfig = {
   red: { start: 2, end: 12 },
   yellow: { start: 2, end: 12 },
@@ -183,7 +188,6 @@ wss.on("connection", (ws) => {
             gameOver: false,
             scoreboard: null,
             rowsToLock: {},
-            // New properties for resetting turn
             turnStartBoards: null,
             turnStartMarks: null,
           },
@@ -276,7 +280,7 @@ wss.on("connection", (ws) => {
         roomState.diceValues = diceValues;
         roomState.diceRolledThisTurn = true;
 
-        // Snapshot boards and marks at start of this turn (after dice roll)
+        // Snapshot boards and marks at the start of this turn after dice roll
         roomState.turnStartBoards = cloneBoards(roomState.boards);
         roomState.turnStartMarks = cloneTurnMarks(roomState.turnMarks);
 
@@ -429,6 +433,7 @@ wss.on("connection", (ws) => {
       }
 
       if (!isActivePlayer) {
+        // Non-active player can only mark once and it must be the white sum
         if (tm.marksCount >= 1) {
           sendErrorAndState(
             ws,
@@ -446,9 +451,12 @@ wss.on("connection", (ws) => {
           return;
         }
       } else {
+        // Active player logic
         if (tm.marksCount === 0) {
+          // First mark
           tm.firstMarkWasWhiteSum = number === whiteSum;
         } else if (tm.marksCount === 1) {
+          // Second mark
           if (!tm.firstMarkWasWhiteSum) {
             sendErrorAndState(
               ws,
@@ -457,11 +465,15 @@ wss.on("connection", (ws) => {
             );
             return;
           }
-          if (number === whiteSum) {
+          // Ensure second mark is from a white+color combo:
+          const possibleColors = sumToColors[number];
+          const hasColor =
+            possibleColors && possibleColors.some((c) => c !== "white");
+          if (!hasColor) {
             sendErrorAndState(
               ws,
               currentRoom,
-              "Second mark must be a white+color sum, not white sum again."
+              "Second mark must be from a white+color combination."
             );
             return;
           }
@@ -487,7 +499,6 @@ wss.on("connection", (ws) => {
           return;
         }
 
-        // Instead of locking now, record that we should lock this row at turn's end
         roomState.rowsToLock[color] = true;
       }
 
@@ -553,7 +564,6 @@ wss.on("connection", (ws) => {
           };
         });
 
-        // Snapshot boards and marks for the next turn start
         roomState.turnStartBoards = cloneBoards(roomState.boards);
         roomState.turnStartMarks = cloneTurnMarks(roomState.turnMarks);
 
@@ -594,13 +604,12 @@ wss.on("connection", (ws) => {
         return;
       }
 
-      // Restore that player's board and marks from the snapshot
       if (!roomState.turnStartBoards || !roomState.turnStartMarks) {
         sendErrorAndState(ws, currentRoom, "Cannot reset turn state.");
         return;
       }
 
-      // Restore that player's rows
+      // Restore player's board
       const savedBoard = roomState.turnStartBoards[requestingPlayer];
       if (savedBoard) {
         roomState.boards[requestingPlayer].red = [...savedBoard.red];
@@ -609,7 +618,7 @@ wss.on("connection", (ws) => {
         roomState.boards[requestingPlayer].blue = [...savedBoard.blue];
       }
 
-      // Restore that player's marks
+      // Restore player's marks
       const savedMarks = roomState.turnStartMarks[requestingPlayer];
       if (savedMarks) {
         roomState.turnMarks[requestingPlayer].marksCount =
