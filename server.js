@@ -124,6 +124,30 @@ function sendErrorAndState(ws, room, msg) {
   if (room) broadcastGameState(room);
 }
 
+function cloneBoards(boards) {
+  const clone = {};
+  for (let player in boards) {
+    clone[player] = {
+      red: [...boards[player].red],
+      yellow: [...boards[player].yellow],
+      green: [...boards[player].green],
+      blue: [...boards[player].blue],
+    };
+  }
+  return clone;
+}
+
+function cloneTurnMarks(turnMarks) {
+  const clone = {};
+  for (let player in turnMarks) {
+    clone[player] = {
+      marksCount: turnMarks[player].marksCount,
+      firstMarkWasWhiteSum: turnMarks[player].firstMarkWasWhiteSum,
+    };
+  }
+  return clone;
+}
+
 wss.on("connection", (ws) => {
   console.log("A player connected");
 
@@ -158,7 +182,10 @@ wss.on("connection", (ws) => {
             diceActive: { red: true, yellow: true, green: true, blue: true },
             gameOver: false,
             scoreboard: null,
-            rowsToLock: {}, // Track rows to lock at end of turn
+            rowsToLock: {},
+            // New properties for resetting turn
+            turnStartBoards: null,
+            turnStartMarks: null,
           },
           clients: [],
           roomCreator: playerName,
@@ -207,6 +234,8 @@ wss.on("connection", (ws) => {
         });
         roomState.turnEndedBy = [];
         roomState.diceRolledThisTurn = false;
+        roomState.turnStartBoards = cloneBoards(roomState.boards);
+        roomState.turnStartMarks = cloneTurnMarks(roomState.turnMarks);
         broadcastGameState(currentRoom);
       } else {
         sendErrorAndState(
@@ -246,6 +275,11 @@ wss.on("connection", (ws) => {
 
         roomState.diceValues = diceValues;
         roomState.diceRolledThisTurn = true;
+
+        // Snapshot boards and marks at start of this turn (after dice roll)
+        roomState.turnStartBoards = cloneBoards(roomState.boards);
+        roomState.turnStartMarks = cloneTurnMarks(roomState.turnMarks);
+
         console.log(`Dice rolled by ${playerName}:`, diceValues);
         broadcastGameState(currentRoom);
       } else {
@@ -473,8 +507,8 @@ wss.on("connection", (ws) => {
 
       const activePlayer = roomState.turnOrder[roomState.activePlayerIndex];
       const tm = roomState.turnMarks[activePlayer];
-      if (!roomState.turnEndedBy.includes(playerName)) {
-        roomState.turnEndedBy.push(playerName);
+      if (!roomState.turnEndedBy.includes(data.playerName)) {
+        roomState.turnEndedBy.push(data.playerName);
       }
 
       if (
@@ -519,7 +553,69 @@ wss.on("connection", (ws) => {
           };
         });
 
+        // Snapshot boards and marks for the next turn start
+        roomState.turnStartBoards = cloneBoards(roomState.boards);
+        roomState.turnStartMarks = cloneTurnMarks(roomState.turnMarks);
+
         checkGameOver(currentRoom);
+      }
+
+      broadcastGameState(currentRoom);
+    }
+
+    if (data.type === "resetTurnForPlayer" && currentRoom) {
+      const roomState = rooms[currentRoom].gameState;
+      if (!roomState.started || roomState.gameOver) {
+        sendErrorAndState(
+          ws,
+          currentRoom,
+          "Cannot reset after game is over or not started."
+        );
+        return;
+      }
+
+      if (!roomState.diceRolledThisTurn) {
+        sendErrorAndState(
+          ws,
+          currentRoom,
+          "No dice rolled this turn, nothing to reset."
+        );
+        return;
+      }
+
+      const requestingPlayer = data.playerName;
+      // If player has already ended their turn this round, no reset
+      if (roomState.turnEndedBy.includes(requestingPlayer)) {
+        sendErrorAndState(
+          ws,
+          currentRoom,
+          "You have already ended your turn and cannot reset."
+        );
+        return;
+      }
+
+      // Restore that player's board and marks from the snapshot
+      if (!roomState.turnStartBoards || !roomState.turnStartMarks) {
+        sendErrorAndState(ws, currentRoom, "Cannot reset turn state.");
+        return;
+      }
+
+      // Restore that player's rows
+      const savedBoard = roomState.turnStartBoards[requestingPlayer];
+      if (savedBoard) {
+        roomState.boards[requestingPlayer].red = [...savedBoard.red];
+        roomState.boards[requestingPlayer].yellow = [...savedBoard.yellow];
+        roomState.boards[requestingPlayer].green = [...savedBoard.green];
+        roomState.boards[requestingPlayer].blue = [...savedBoard.blue];
+      }
+
+      // Restore that player's marks
+      const savedMarks = roomState.turnStartMarks[requestingPlayer];
+      if (savedMarks) {
+        roomState.turnMarks[requestingPlayer].marksCount =
+          savedMarks.marksCount;
+        roomState.turnMarks[requestingPlayer].firstMarkWasWhiteSum =
+          savedMarks.firstMarkWasWhiteSum;
       }
 
       broadcastGameState(currentRoom);
