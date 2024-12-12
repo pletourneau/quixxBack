@@ -158,8 +158,7 @@ wss.on("connection", (ws) => {
             diceActive: { red: true, yellow: true, green: true, blue: true },
             gameOver: false,
             scoreboard: null,
-            // rowsToLock will hold rows that need to be locked at end of turn
-            rowsToLock: {},
+            rowsToLock: {}, // Track rows to lock at end of turn
           },
           clients: [],
           roomCreator: playerName,
@@ -454,10 +453,7 @@ wss.on("connection", (ws) => {
           return;
         }
 
-        // Instead of locking immediately, record that this row should be locked at end of turn
-        if (!roomState.rowsToLock) {
-          roomState.rowsToLock = {};
-        }
+        // Instead of locking now, record that we should lock this row at turn's end
         roomState.rowsToLock[color] = true;
       }
 
@@ -501,6 +497,9 @@ wss.on("connection", (ws) => {
           });
           roomState.rowsToLock = {};
         }
+
+        // Clear dice for next turn so they are not visible until rolled
+        roomState.diceValues = null;
 
         checkGameOver(currentRoom);
         if (roomState.gameOver) {
