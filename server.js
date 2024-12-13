@@ -7,7 +7,6 @@ const wss = new WebSocket.Server({ server });
 
 const PORT = process.env.PORT || 3000;
 
-// A simple route to verify the server is running
 app.get("/", (req, res) => {
   res.send("Server is running and ready for WebSocket connections!");
 });
@@ -226,6 +225,7 @@ wss.on("connection", (ws) => {
       const roomState = rooms[currentRoom].gameState;
       if (rooms[currentRoom].roomCreator === playerName) {
         roomState.turnOrder = data.turnOrder;
+        // Randomize the starting player
         roomState.activePlayerIndex = Math.floor(
           Math.random() * roomState.turnOrder.length
         );
@@ -280,7 +280,6 @@ wss.on("connection", (ws) => {
         roomState.diceValues = diceValues;
         roomState.diceRolledThisTurn = true;
 
-        // Snapshot boards and marks at the start of this turn after dice roll
         roomState.turnStartBoards = cloneBoards(roomState.boards);
         roomState.turnStartMarks = cloneTurnMarks(roomState.turnMarks);
 
@@ -433,7 +432,6 @@ wss.on("connection", (ws) => {
       }
 
       if (!isActivePlayer) {
-        // Non-active player can only mark once and it must be the white sum
         if (tm.marksCount >= 1) {
           sendErrorAndState(
             ws,
@@ -451,12 +449,9 @@ wss.on("connection", (ws) => {
           return;
         }
       } else {
-        // Active player logic
         if (tm.marksCount === 0) {
-          // First mark
           tm.firstMarkWasWhiteSum = number === whiteSum;
         } else if (tm.marksCount === 1) {
-          // Second mark
           if (!tm.firstMarkWasWhiteSum) {
             sendErrorAndState(
               ws,
@@ -465,7 +460,6 @@ wss.on("connection", (ws) => {
             );
             return;
           }
-          // Ensure second mark is from a white+color combo:
           const possibleColors = sumToColors[number];
           const hasColor =
             possibleColors && possibleColors.some((c) => c !== "white");
@@ -526,13 +520,11 @@ wss.on("connection", (ws) => {
         roomState.turnEndedBy.length === roomState.players.length &&
         !roomState.gameOver
       ) {
-        // If active player made no marks and dice rolled, penalty
         if (tm.marksCount === 0 && roomState.diceRolledThisTurn) {
           roomState.penalties[activePlayer] =
             (roomState.penalties[activePlayer] || 0) + 1;
         }
 
-        // Apply row locks now at the end of the turn
         if (roomState.rowsToLock) {
           Object.keys(roomState.rowsToLock).forEach((color) => {
             if (roomState.rowsToLock[color]) {
@@ -543,7 +535,6 @@ wss.on("connection", (ws) => {
           roomState.rowsToLock = {};
         }
 
-        // Clear dice for next turn so they are not visible until rolled
         roomState.diceValues = null;
 
         checkGameOver(currentRoom);
@@ -552,7 +543,6 @@ wss.on("connection", (ws) => {
           return;
         }
 
-        // Move to next turn
         roomState.activePlayerIndex =
           (roomState.activePlayerIndex + 1) % roomState.turnOrder.length;
         roomState.diceRolledThisTurn = false;
@@ -594,7 +584,6 @@ wss.on("connection", (ws) => {
       }
 
       const requestingPlayer = data.playerName;
-      // If player has already ended their turn this round, no reset
       if (roomState.turnEndedBy.includes(requestingPlayer)) {
         sendErrorAndState(
           ws,
@@ -609,7 +598,6 @@ wss.on("connection", (ws) => {
         return;
       }
 
-      // Restore player's board
       const savedBoard = roomState.turnStartBoards[requestingPlayer];
       if (savedBoard) {
         roomState.boards[requestingPlayer].red = [...savedBoard.red];
@@ -618,7 +606,6 @@ wss.on("connection", (ws) => {
         roomState.boards[requestingPlayer].blue = [...savedBoard.blue];
       }
 
-      // Restore player's marks
       const savedMarks = roomState.turnStartMarks[requestingPlayer];
       if (savedMarks) {
         roomState.turnMarks[requestingPlayer].marksCount =
