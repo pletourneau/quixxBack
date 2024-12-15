@@ -225,7 +225,6 @@ wss.on("connection", (ws) => {
       const roomState = rooms[currentRoom].gameState;
       if (rooms[currentRoom].roomCreator === playerName) {
         roomState.turnOrder = data.turnOrder;
-        // Randomize the starting player
         roomState.activePlayerIndex = Math.floor(
           Math.random() * roomState.turnOrder.length
         );
