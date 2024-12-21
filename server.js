@@ -81,7 +81,10 @@ function broadcastGameState(room) {
   const gameState = {
     type: "gameState",
     started: roomState.started,
-    players: roomState.players.map((player) => ({ name: player.name })),
+    players: roomState.players.map((player) => ({
+      name: player.name,
+      connected: rooms[room].playersByName[player.name].connected, // ADDED
+    })),
     turnOrder: roomState.turnOrder,
     activePlayerIndex: roomState.activePlayerIndex,
     diceValues: roomState.diceValues || null,
@@ -94,6 +97,7 @@ function broadcastGameState(room) {
   };
 
   const state = JSON.stringify(gameState);
+  // Send to all connected clients
   rooms[room].clients.forEach((client) => {
     if (client.readyState === WebSocket.OPEN) {
       client.send(state);
@@ -164,7 +168,10 @@ wss.on("connection", (ws) => {
     if (data.type === "joinRoom") {
       const room = data.passcode;
       playerName = data.playerName;
+
+      // Check if room exists
       if (!rooms[room]) {
+        // Create room
         rooms[room] = {
           gameState: {
             started: false,
@@ -191,18 +198,46 @@ wss.on("connection", (ws) => {
             turnStartMarks: null,
           },
           clients: [],
+          playersByName: {}, // ADDED
           roomCreator: playerName,
         };
+
         ws.send(JSON.stringify({ type: "newGame", room }));
         console.log(`Room ${room} created by ${playerName}`);
       }
 
       const roomState = rooms[room].gameState;
+      const roomData = rooms[room];
+
+      // Check if game already started
       if (roomState.started) {
-        sendErrorAndState(ws, room, "Game has already started.");
+        // If started, check if this playerName already exists and is disconnected
+        if (roomData.playersByName[playerName]) {
+          // Known player
+          if (!roomData.playersByName[playerName].connected) {
+            // Reconnecting
+            roomData.playersByName[playerName].connected = true;
+            roomData.playersByName[playerName].ws = ws;
+
+            // Replace in clients list if needed
+            roomData.clients.push(ws);
+            currentRoom = room;
+
+            console.log(`${playerName} reconnected to room: ${room}`);
+            broadcastGameState(room);
+          } else {
+            // Player already connected from another session?
+            // This scenario might be odd - handle as you wish.
+            sendErrorAndState(ws, room, "You are already connected.");
+          }
+        } else {
+          // New player trying to join an ongoing game
+          sendErrorAndState(ws, room, "Game has already started.");
+        }
         return;
       }
 
+      // If game not started, allow joining
       if (!roomState.players.some((p) => p.name === playerName)) {
         roomState.players.push({ name: playerName });
         roomState.penalties[playerName] = 0;
@@ -214,7 +249,13 @@ wss.on("connection", (ws) => {
         };
       }
 
-      rooms[room].clients.push(ws);
+      // ADDED: Track player connection state
+      roomData.playersByName[playerName] = {
+        ws,
+        connected: true,
+      };
+
+      roomData.clients.push(ws);
       currentRoom = room;
 
       console.log(`${playerName} joined room: ${room}`);
@@ -223,7 +264,8 @@ wss.on("connection", (ws) => {
 
     if (data.type === "startGame" && currentRoom) {
       const roomState = rooms[currentRoom].gameState;
-      if (rooms[currentRoom].roomCreator === playerName) {
+      const roomData = rooms[currentRoom];
+      if (roomData.roomCreator === playerName) {
         roomState.turnOrder = data.turnOrder;
         roomState.activePlayerIndex = Math.floor(
           Math.random() * roomState.turnOrder.length
@@ -619,25 +661,21 @@ wss.on("connection", (ws) => {
 
   ws.on("close", () => {
     if (currentRoom && playerName) {
-      const roomState = rooms[currentRoom].gameState;
-      rooms[currentRoom].clients = rooms[currentRoom].clients.filter(
-        (c) => c !== ws
-      );
-      roomState.players = roomState.players.filter(
-        (p) => p.name !== playerName
-      );
+      const roomData = rooms[currentRoom];
+      if (!roomData) return;
+      // Instead of removing the player, mark them as disconnected
+      if (roomData.playersByName[playerName]) {
+        roomData.playersByName[playerName].connected = false;
+        // Remove the ws from the clients list
+        roomData.clients = roomData.clients.filter((c) => c !== ws);
 
-      if (roomState.turnOrder && roomState.turnOrder.includes(playerName)) {
-        roomState.turnOrder = roomState.turnOrder.filter(
-          (n) => n !== playerName
-        );
-        if (roomState.activePlayerIndex >= roomState.turnOrder.length) {
-          roomState.activePlayerIndex = 0;
-        }
+        console.log(`${playerName} disconnected from room: ${currentRoom}`);
+        // We do not remove them from the turnOrder or players array
+        // The game can continue and they can potentially reconnect.
+
+        // Broadcast updated state so others see that this player is disconnected
+        broadcastGameState(currentRoom);
       }
-
-      console.log(`${playerName} left room: ${currentRoom}`);
-      broadcastGameState(currentRoom);
     }
   });
 });
