@@ -409,7 +409,7 @@ wss.on("connection", (ws) => {
         }
       }
 
-      // Build up valid sums
+      // Build up valid sums for color dice
       if (roomState.diceActive.red) {
         let val1 =
           roomState.diceValues.white1 + (roomState.diceValues.red || 0);
@@ -449,19 +449,21 @@ wss.on("connection", (ws) => {
         return;
       }
 
-      // 2) **ADDED**: Also ensure that "color" is in sumToColors[number]
-      //    If the user is trying to mark 'yellow 5' but sumToColors[5] = ['blue'],
-      //    it will fail here:
-      const possibleColors = sumToColors[number] || [];
-      if (!possibleColors.includes(color)) {
-        sendErrorAndState(
-          ws,
-          currentRoom,
-          `Color "${color}" with number ${number} is not valid for these dice.`
-        );
-        return;
+      // 2) If marking the white dice sum, skip color check,
+      //    else ensure that "color" is in sumToColors[number]
+      if (number !== whiteSum) {
+        // This is a color sum. Must match color.
+        const possibleColors = sumToColors[number] || [];
+        if (!possibleColors.includes(color)) {
+          sendErrorAndState(
+            ws,
+            currentRoom,
+            `Color "${color}" with number ${number} is not valid for these dice.`
+          );
+          return;
+        }
       }
-      // END ADDED
+      // END FIX
 
       // Next checks: row & marks logic
       const rowArray = roomState.boards[markPlayerName][color];
@@ -542,12 +544,12 @@ wss.on("connection", (ws) => {
             );
             return;
           }
-          // The second must be a color sum, so check we are not marking white?
-          // (We already checked color above, so it's safe)
+          // The second must be a color sum. We already verified color if number !== whiteSum, above.
           const possibleColorsNow = sumToColors[number];
           const hasNonWhite =
             possibleColorsNow && possibleColorsNow.some((c) => c !== "white");
-          if (!hasNonWhite) {
+          if (!hasNonWhite && number !== whiteSum) {
+            // If it's not whiteSum, it must be color, so must appear.
             sendErrorAndState(
               ws,
               currentRoom,
@@ -565,7 +567,7 @@ wss.on("connection", (ws) => {
         }
       }
 
-      // If final number (12 ascending, or 2 descending) => check for 5 previous marks
+      // If final number => check 5 marks
       let finalNumber = isAscendingRow(color) ? 12 : 2;
       if (number === finalNumber) {
         const marksInRow = rowArray.filter((x) => x).length;
@@ -577,11 +579,10 @@ wss.on("connection", (ws) => {
           );
           return;
         }
-        // Lock the row
         roomState.rowsToLock[color] = true;
       }
 
-      // All checks pass => mark
+      // Mark the cell
       rowArray[index] = true;
       tm.marksCount += 1;
       roomState.turnMarks[markPlayerName] = tm;
@@ -603,7 +604,6 @@ wss.on("connection", (ws) => {
         roomState.turnEndedBy.push(data.playerName);
       }
 
-      // If all players ended, move to next turn
       if (
         roomState.turnEndedBy.length === roomState.players.length &&
         !roomState.gameOver
@@ -614,7 +614,7 @@ wss.on("connection", (ws) => {
             (roomState.penalties[activePlayer] || 0) + 1;
         }
 
-        // Lock any rows that were flagged to lock
+        // Lock rows if flagged
         if (roomState.rowsToLock) {
           Object.keys(roomState.rowsToLock).forEach((color) => {
             if (roomState.rowsToLock[color]) {
@@ -625,7 +625,6 @@ wss.on("connection", (ws) => {
           roomState.rowsToLock = {};
         }
 
-        // Clear dice
         roomState.diceValues = null;
 
         checkGameOver(currentRoom);
@@ -634,12 +633,11 @@ wss.on("connection", (ws) => {
           return;
         }
 
-        // Next player's turn
+        // Advance to next player
         roomState.activePlayerIndex =
           (roomState.activePlayerIndex + 1) % roomState.turnOrder.length;
         roomState.diceRolledThisTurn = false;
         roomState.turnEndedBy = [];
-        // Reset each player's turn marks
         roomState.turnOrder.forEach((p) => {
           roomState.turnMarks[p] = {
             marksCount: 0,
@@ -647,7 +645,6 @@ wss.on("connection", (ws) => {
           };
         });
 
-        // Save fresh boards/marks for new turn
         roomState.turnStartBoards = cloneBoards(roomState.boards);
         roomState.turnStartMarks = cloneTurnMarks(roomState.turnMarks);
 
@@ -701,6 +698,7 @@ wss.on("connection", (ws) => {
         roomState.boards[requestingPlayer].green = [...savedBoard.green];
         roomState.boards[requestingPlayer].blue = [...savedBoard.blue];
       }
+
       // Restore that player's turn marks
       const savedMarks = roomState.turnStartMarks[requestingPlayer];
       if (savedMarks) {
