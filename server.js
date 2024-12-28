@@ -133,7 +133,7 @@ function checkGameOver(room) {
   // Or if 2 rows are locked (by anyone)
   let lockedCount = 0;
   Object.keys(roomState.lockedRows).forEach((c) => {
-    // If lockedRows[c] is a playerName, it's locked
+    // If lockedRows[c] is a playerName, row is locked
     if (roomState.lockedRows[c]) {
       lockedCount++;
     }
@@ -142,15 +142,17 @@ function checkGameOver(room) {
   if (fourPenalties || lockedCount >= 2) {
     roomState.gameOver = true;
     roomState.scoreboard = computeScoreboard(roomState);
+    console.log(`Game Over in room ${room}:`, roomState.scoreboard);
 
     // After gameOver is set, we broadcast once more
     broadcastGameState(room);
 
     // ======= ADD CLEANUP LOGIC HERE =======
-    // Example: after 10 seconds, remove the room from `rooms`.
+    // Example: after 10 seconds, remove the room from rooms.
     setTimeout(() => {
       delete rooms[room];
-    });
+      console.log(`Room ${room} deleted after game over.`);
+    }, 10000);
   }
 }
 
