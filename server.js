@@ -142,6 +142,15 @@ function checkGameOver(room) {
   if (fourPenalties || lockedCount >= 2) {
     roomState.gameOver = true;
     roomState.scoreboard = computeScoreboard(roomState);
+
+    // After gameOver is set, we broadcast once more
+    broadcastGameState(room);
+
+    // ======= ADD CLEANUP LOGIC HERE =======
+    // Example: after 10 seconds, remove the room from `rooms`.
+    setTimeout(() => {
+      delete rooms[room];
+    });
   }
 }
 
