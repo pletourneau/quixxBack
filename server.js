@@ -40,7 +40,7 @@ const scoringTable = {
   12: 78,
 };
 
-// If row is locked, treat it as one extra mark for scoring
+// If row is locked by a player, treat it as one extra mark only for that player
 function calculateScoreForPlayer(playerName, roomState) {
   const colors = ["red", "yellow", "green", "blue"];
   let total = 0;
@@ -55,10 +55,14 @@ function calculateScoreForPlayer(playerName, roomState) {
 
   colors.forEach((color) => {
     const rowArray = roomState.boards[playerName][color];
+    // Count how many crosses the player has
     let crosses = rowArray.filter((x) => x).length;
-    if (roomState.lockedRows[color]) {
+
+    // Only add +1 if this color was locked by *this* player
+    if (roomState.lockedRows[color] === playerName) {
       crosses += 1;
     }
+
     const score = scoringTable[crosses] || 0;
     details[color + "Score"] = score;
     total += score;
@@ -98,6 +102,8 @@ function broadcastGameState(room) {
     diceRolledThisTurn: roomState.diceRolledThisTurn || false,
     turnEndedBy: roomState.turnEndedBy || [],
     penalties: roomState.penalties || {},
+    lockedRows: roomState.lockedRows || {}, // now stores playerName or null
+    diceActive: roomState.diceActive || {},
     gameOver: roomState.gameOver || false,
     scoreboard: roomState.scoreboard || null,
   };
@@ -119,13 +125,18 @@ function checkGameOver(room) {
   // End if any player hits 4 penalties
   let fourPenalties = false;
   Object.keys(roomState.penalties).forEach((p) => {
-    if (roomState.penalties[p] >= 4) fourPenalties = true;
+    if (roomState.penalties[p] >= 4) {
+      fourPenalties = true;
+    }
   });
 
-  // Or if 2 rows are locked
+  // Or if 2 rows are locked (by anyone)
   let lockedCount = 0;
   Object.keys(roomState.lockedRows).forEach((c) => {
-    if (roomState.lockedRows[c]) lockedCount++;
+    // If lockedRows[c] is a playerName, it's locked
+    if (roomState.lockedRows[c]) {
+      lockedCount++;
+    }
   });
 
   if (fourPenalties || lockedCount >= 2) {
@@ -172,13 +183,12 @@ wss.on("connection", (ws) => {
   ws.on("message", (message) => {
     const data = JSON.parse(message);
 
-    // ========== JOIN ROOM ==========
     if (data.type === "joinRoom") {
       const room = data.passcode;
       playerName = data.playerName;
 
       if (!rooms[room]) {
-        // Create new room
+        // Create a new room
         rooms[room] = {
           gameState: {
             started: false,
@@ -191,13 +201,19 @@ wss.on("connection", (ws) => {
             turnMarks: {},
             turnEndedBy: [],
             penalties: {},
+            // Instead of booleans, store the name of the player who locked
             lockedRows: {
-              red: false,
-              yellow: false,
-              green: false,
-              blue: false,
+              red: null,
+              yellow: null,
+              green: null,
+              blue: null,
             },
-            diceActive: { red: true, yellow: true, green: true, blue: true },
+            diceActive: {
+              red: true,
+              yellow: true,
+              green: true,
+              blue: true,
+            },
             gameOver: false,
             scoreboard: null,
             rowsToLock: {},
@@ -209,7 +225,6 @@ wss.on("connection", (ws) => {
           roomCreator: playerName,
         };
 
-        // Let client know it's a new game
         ws.send(JSON.stringify({ type: "newGame", room }));
         console.log(`Room ${room} created by ${playerName}`);
       }
@@ -217,11 +232,12 @@ wss.on("connection", (ws) => {
       const roomState = rooms[room].gameState;
       const roomData = rooms[room];
 
-      // If the game has started, maybe a reconnection
+      // If game already started, check for reconnection
       if (roomState.started) {
         if (roomData.playersByName[playerName]) {
+          // Known player
           if (!roomData.playersByName[playerName].connected) {
-            // Reconnect
+            // Reconnecting
             roomData.playersByName[playerName].connected = true;
             roomData.playersByName[playerName].ws = ws;
             roomData.clients.push(ws);
@@ -233,13 +249,13 @@ wss.on("connection", (ws) => {
             sendErrorAndState(ws, room, "You are already connected.");
           }
         } else {
-          // New name, but game in progress => reject
+          // New player, but game in progress => reject
           sendErrorAndState(ws, room, "Game has already started.");
         }
         return;
       }
 
-      // If game not started, add this new player
+      // If game not started, allow joining
       if (!roomState.players.some((p) => p.name === playerName)) {
         roomState.players.push({ name: playerName });
         roomState.penalties[playerName] = 0;
@@ -251,7 +267,6 @@ wss.on("connection", (ws) => {
         };
       }
 
-      // Track the connection
       roomData.playersByName[playerName] = {
         ws,
         connected: true,
@@ -264,7 +279,7 @@ wss.on("connection", (ws) => {
       broadcastGameState(room);
     }
 
-    // ========== START GAME ==========
+    // Start Game
     if (data.type === "startGame" && currentRoom) {
       const roomState = rooms[currentRoom].gameState;
       const roomData = rooms[currentRoom];
@@ -275,7 +290,6 @@ wss.on("connection", (ws) => {
         );
         roomState.started = true;
 
-        // Initialize each player's turn mark counters
         roomState.turnOrder.forEach((p) => {
           roomState.turnMarks[p] = {
             marksCount: 0,
@@ -289,34 +303,24 @@ wss.on("connection", (ws) => {
 
         broadcastGameState(currentRoom);
       } else {
-        sendErrorAndState(
-          ws,
-          currentRoom,
-          "Only the room creator can start the game."
-        );
+        sendErrorAndState(ws, currentRoom, "Only the room creator can start.");
       }
     }
 
-    // ========== ROLL DICE ==========
+    // Roll Dice
     if (data.type === "rollDice" && currentRoom) {
       const roomState = rooms[currentRoom].gameState;
       if (roomState.gameOver) {
         sendErrorAndState(ws, currentRoom, "Game is over.");
         return;
       }
-
       const activePlayer = roomState.turnOrder[roomState.activePlayerIndex];
       if (activePlayer === playerName) {
         if (roomState.diceRolledThisTurn) {
-          sendErrorAndState(
-            ws,
-            currentRoom,
-            "Dice have already been rolled this turn."
-          );
+          sendErrorAndState(ws, currentRoom, "Dice already rolled this turn.");
           return;
         }
 
-        // Roll dice
         function rollDie() {
           return Math.floor(Math.random() * 6) + 1;
         }
@@ -332,18 +336,17 @@ wss.on("connection", (ws) => {
         roomState.diceValues = diceValues;
         roomState.diceRolledThisTurn = true;
 
-        // Save boards/marks in case of "resetTurn"
         roomState.turnStartBoards = cloneBoards(roomState.boards);
         roomState.turnStartMarks = cloneTurnMarks(roomState.turnMarks);
 
         console.log(`Dice rolled by ${playerName}:`, diceValues);
         broadcastGameState(currentRoom);
       } else {
-        sendErrorAndState(ws, currentRoom, "You are not the active player.");
+        sendErrorAndState(ws, currentRoom, "Not the active player.");
       }
     }
 
-    // ========== MARK CELL ==========
+    // Mark Cell
     if (data.type === "markCell" && currentRoom) {
       const roomState = rooms[currentRoom].gameState;
       if (roomState.gameOver) {
@@ -352,22 +355,16 @@ wss.on("connection", (ws) => {
       }
 
       const { playerName: markPlayerName, color, number } = data;
-
       if (!roomState.diceRolledThisTurn) {
-        sendErrorAndState(
-          ws,
-          currentRoom,
-          "You cannot mark before dice are rolled this turn."
-        );
+        sendErrorAndState(ws, currentRoom, "Dice not rolled this turn yet.");
         return;
       }
-
       if (!roomState.boards[markPlayerName]) {
         sendErrorAndState(ws, currentRoom, "Player board not found.");
         return;
       }
-
       if (roomState.lockedRows[color]) {
+        // If lockedRows[color] is *any* player, row is locked for all
         sendErrorAndState(ws, currentRoom, "This row is locked.");
         return;
       }
@@ -380,7 +377,7 @@ wss.on("connection", (ws) => {
       const isActivePlayer = activePlayer === markPlayerName;
 
       if (!roomState.diceValues) {
-        sendErrorAndState(ws, currentRoom, "No dice values rolled this turn.");
+        sendErrorAndState(ws, currentRoom, "No dice values this turn.");
         return;
       }
 
@@ -392,15 +389,13 @@ wss.on("connection", (ws) => {
       let sumToColors = {};
       sumToColors[whiteSum] = ["white"];
 
-      // Helper to track color sums
-      function addColorSum(num, ccolor) {
+      function addColorSum(num, cc) {
         if (!sumToColors[num]) sumToColors[num] = [];
-        if (!sumToColors[num].includes(ccolor)) {
-          sumToColors[num].push(ccolor);
+        if (!sumToColors[num].includes(cc)) {
+          sumToColors[num].push(cc);
         }
       }
 
-      // Helper to push sums if that color is active
       function addIfActive(cc, val1, val2) {
         if (roomState.diceActive[cc]) {
           validSums.push(val1, val2);
@@ -409,7 +404,7 @@ wss.on("connection", (ws) => {
         }
       }
 
-      // Build up valid sums for color dice
+      // Build color sums
       if (roomState.diceActive.red) {
         let val1 =
           roomState.diceValues.white1 + (roomState.diceValues.red || 0);
@@ -439,33 +434,25 @@ wss.on("connection", (ws) => {
         addIfActive("blue", val1, val2);
       }
 
-      // 1) Check if chosen number is in valid sums
+      // 1) Check if number in valid sums
       if (!validSums.includes(number)) {
-        sendErrorAndState(
-          ws,
-          currentRoom,
-          "Chosen cell does not match any allowed sums."
-        );
+        sendErrorAndState(ws, currentRoom, "Chosen cell not in allowed sums.");
         return;
       }
 
-      // 2) If marking the white dice sum, skip color check,
-      //    else ensure that "color" is in sumToColors[number]
+      // 2) If not whiteSum, ensure color is in sumToColors[number]
       if (number !== whiteSum) {
-        // This is a color sum. Must match color.
         const possibleColors = sumToColors[number] || [];
         if (!possibleColors.includes(color)) {
           sendErrorAndState(
             ws,
             currentRoom,
-            `Color "${color}" with number ${number} is not valid for these dice.`
+            `Color "${color}" with ${number} is not valid.`
           );
           return;
         }
       }
-      // END FIX
 
-      // Next checks: row & marks logic
       const rowArray = roomState.boards[markPlayerName][color];
       let index;
       if (isAscendingRow(color)) {
@@ -479,13 +466,11 @@ wss.on("connection", (ws) => {
         return;
       }
 
-      // Check if you're marking out of order (can't mark smaller or bigger than existing)
+      // Must not mark smaller or bigger than existing ones
       let previouslyMarkedNumbers = [];
       rowArray.forEach((marked, i) => {
         if (marked) {
-          let cellNumber;
-          if (isAscendingRow(color)) cellNumber = i + 2;
-          else cellNumber = 12 - i;
+          let cellNumber = isAscendingRow(color) ? i + 2 : 12 - i;
           previouslyMarkedNumbers.push(cellNumber);
         }
       });
@@ -494,24 +479,16 @@ wss.on("connection", (ws) => {
         const maxMarked = Math.max(...previouslyMarkedNumbers);
         const minMarked = Math.min(...previouslyMarkedNumbers);
         if (isAscendingRow(color) && number < maxMarked) {
-          sendErrorAndState(
-            ws,
-            currentRoom,
-            "Cannot mark a smaller number than one already marked."
-          );
+          sendErrorAndState(ws, currentRoom, "Cannot mark smaller than max.");
           return;
         }
         if (!isAscendingRow(color) && number > minMarked) {
-          sendErrorAndState(
-            ws,
-            currentRoom,
-            "Cannot mark a larger number than one already marked."
-          );
+          sendErrorAndState(ws, currentRoom, "Cannot mark larger than min.");
           return;
         }
       }
 
-      // Non-active player can only mark the white sum, and only once
+      // Non-active player can only mark once, white sum only
       if (!isActivePlayer) {
         if (tm.marksCount >= 1) {
           sendErrorAndState(
@@ -522,38 +499,31 @@ wss.on("connection", (ws) => {
           return;
         }
         if (number !== whiteSum) {
-          sendErrorAndState(
-            ws,
-            currentRoom,
-            "Non-active player must mark the white dice sum."
-          );
+          sendErrorAndState(ws, currentRoom, "Must mark the white dice sum.");
           return;
         }
       } else {
         // Active player can mark up to 2 times
         if (tm.marksCount === 0) {
-          // The first mark can be the white sum or a colored sum
           tm.firstMarkWasWhiteSum = number === whiteSum;
         } else if (tm.marksCount === 1) {
-          // The second mark can only happen if the first was white sum
+          // second mark only if first was white sum
           if (!tm.firstMarkWasWhiteSum) {
             sendErrorAndState(
               ws,
               currentRoom,
-              "To make a second mark, the first must be the white dice sum."
+              "Second mark requires first was white sum."
             );
             return;
           }
-          // The second must be a color sum. We already verified color if number !== whiteSum, above.
           const possibleColorsNow = sumToColors[number];
           const hasNonWhite =
             possibleColorsNow && possibleColorsNow.some((c) => c !== "white");
           if (!hasNonWhite && number !== whiteSum) {
-            // If it's not whiteSum, it must be color, so must appear.
             sendErrorAndState(
               ws,
               currentRoom,
-              "Second mark must be from a white+color combination."
+              "Second mark must be from white+color sum."
             );
             return;
           }
@@ -561,13 +531,13 @@ wss.on("connection", (ws) => {
           sendErrorAndState(
             ws,
             currentRoom,
-            "You have already marked two numbers this turn."
+            "You already marked two numbers this turn."
           );
           return;
         }
       }
 
-      // If final number => check 5 marks
+      // If final number => check 5 marks then lock row for this player
       let finalNumber = isAscendingRow(color) ? 12 : 2;
       if (number === finalNumber) {
         const marksInRow = rowArray.filter((x) => x).length;
@@ -575,14 +545,16 @@ wss.on("connection", (ws) => {
           sendErrorAndState(
             ws,
             currentRoom,
-            "You must have at least 5 marks before marking the final number."
+            "Need at least 5 marks before final number."
           );
           return;
         }
-        roomState.rowsToLock[color] = true;
+        // Instead of lockedRows[color] = true,
+        // store the player's name
+        roomState.rowsToLock[color] = markPlayerName;
       }
 
-      // Mark the cell
+      // Mark cell
       rowArray[index] = true;
       tm.marksCount += 1;
       roomState.turnMarks[markPlayerName] = tm;
@@ -590,7 +562,7 @@ wss.on("connection", (ws) => {
       broadcastGameState(currentRoom);
     }
 
-    // ========== END TURN ==========
+    // End Turn
     if (data.type === "endTurn" && currentRoom) {
       const roomState = rooms[currentRoom].gameState;
       if (roomState.gameOver) {
@@ -608,7 +580,7 @@ wss.on("connection", (ws) => {
         roomState.turnEndedBy.length === roomState.players.length &&
         !roomState.gameOver
       ) {
-        // If active player never marked anything but dice were rolled => penalty
+        // If active player didn't mark but dice were rolled => penalty
         if (tm.marksCount === 0 && roomState.diceRolledThisTurn) {
           roomState.penalties[activePlayer] =
             (roomState.penalties[activePlayer] || 0) + 1;
@@ -617,8 +589,11 @@ wss.on("connection", (ws) => {
         // Lock rows if flagged
         if (roomState.rowsToLock) {
           Object.keys(roomState.rowsToLock).forEach((color) => {
-            if (roomState.rowsToLock[color]) {
-              roomState.lockedRows[color] = true;
+            const whoLocked = roomState.rowsToLock[color];
+            if (whoLocked) {
+              // lock the row for everyone => no more marking,
+              // but only that user gets +1 cross
+              roomState.lockedRows[color] = whoLocked;
               roomState.diceActive[color] = false;
             }
           });
@@ -633,7 +608,7 @@ wss.on("connection", (ws) => {
           return;
         }
 
-        // Advance to next player
+        // Next player's turn
         roomState.activePlayerIndex =
           (roomState.activePlayerIndex + 1) % roomState.turnOrder.length;
         roomState.diceRolledThisTurn = false;
@@ -654,7 +629,7 @@ wss.on("connection", (ws) => {
       broadcastGameState(currentRoom);
     }
 
-    // ========== RESET TURN FOR PLAYER ==========
+    // Reset Turn for Player
     if (data.type === "resetTurnForPlayer" && currentRoom) {
       const roomState = rooms[currentRoom].gameState;
       if (!roomState.started || roomState.gameOver) {
@@ -667,21 +642,13 @@ wss.on("connection", (ws) => {
       }
 
       if (!roomState.diceRolledThisTurn) {
-        sendErrorAndState(
-          ws,
-          currentRoom,
-          "No dice rolled this turn, nothing to reset."
-        );
+        sendErrorAndState(ws, currentRoom, "No dice rolled this turn.");
         return;
       }
 
       const requestingPlayer = data.playerName;
       if (roomState.turnEndedBy.includes(requestingPlayer)) {
-        sendErrorAndState(
-          ws,
-          currentRoom,
-          "You have already ended your turn and cannot reset."
-        );
+        sendErrorAndState(ws, currentRoom, "You already ended your turn.");
         return;
       }
 
@@ -690,7 +657,7 @@ wss.on("connection", (ws) => {
         return;
       }
 
-      // Restore that player's board from turnStart
+      // Restore boards/marks from start
       const savedBoard = roomState.turnStartBoards[requestingPlayer];
       if (savedBoard) {
         roomState.boards[requestingPlayer].red = [...savedBoard.red];
@@ -699,7 +666,6 @@ wss.on("connection", (ws) => {
         roomState.boards[requestingPlayer].blue = [...savedBoard.blue];
       }
 
-      // Restore that player's turn marks
       const savedMarks = roomState.turnStartMarks[requestingPlayer];
       if (savedMarks) {
         roomState.turnMarks[requestingPlayer].marksCount =
@@ -712,7 +678,7 @@ wss.on("connection", (ws) => {
     }
   });
 
-  // ========== WEBSOCKET CLOSE ==========
+  // On Close
   ws.on("close", () => {
     if (currentRoom && playerName) {
       const roomData = rooms[currentRoom];
